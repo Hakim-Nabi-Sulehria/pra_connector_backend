@@ -6,7 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=20.14.1"
+    "node": ">=20.14.1 <25"
   },
   "scripts": {
     "postinstall": "prisma generate",
