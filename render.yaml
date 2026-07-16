@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: pra-connector-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npx prisma migrate deploy && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 20.14.1
