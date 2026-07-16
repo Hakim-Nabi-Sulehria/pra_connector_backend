@@ -6,13 +6,20 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.setGlobalPrefix('api');
 
-  const origins = (process.env.FRONTEND_URL || 'http://localhost:5173')
+  const configured = (process.env.FRONTEND_URL || 'http://localhost:5173')
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
 
   app.enableCors({
-    origin: origins.length === 1 ? origins[0] : origins,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const allowed =
+        configured.includes(origin) ||
+        origin.includes('localhost') ||
+        origin.endsWith('.vercel.app');
+      return callback(null, allowed);
+    },
     credentials: true,
   });
   app.useGlobalPipes(
