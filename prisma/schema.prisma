@@ -1,0 +1,171 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Connection URL is read from DATABASE_URL in .env
+
+enum Role {
+  SUPER_ADMIN
+  CUSTOMER_ADMIN
+  CUSTOMER_USER
+}
+
+enum ConnectionStatus {
+  DISCONNECTED
+  CONNECTED
+  ERROR
+  PENDING
+}
+
+enum InvoiceSyncStatus {
+  PENDING
+  VALIDATED
+  POSTED
+  FAILED
+  RETRYING
+}
+
+enum MappingSection {
+  HEADER
+  LINE
+}
+
+model User {
+  id             String        @id @default(cuid())
+  email          String        @unique
+  passwordHash   String
+  fullName       String
+  role           Role          @default(CUSTOMER_ADMIN)
+  isActive       Boolean       @default(true)
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  lastLoginAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  auditLogs      AuditLog[]
+
+  @@index([organizationId])
+  @@index([role])
+}
+
+model Organization {
+  id          String         @id @default(cuid())
+  name        String
+  legalName   String?
+  pntn        String?
+  industry    String?
+  isActive    Boolean        @default(true)
+  plan        String         @default("starter")
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  users       User[]
+  branches    Branch[]
+  qbo         QboConnection?
+  pra         PraConnection?
+  mappings    FieldMapping[]
+  invoices    InvoiceSync[]
+  auditLogs   AuditLog[]
+}
+
+model Branch {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  city           String?
+  address        String?
+  praPosId       String?
+  isDefault      Boolean      @default(false)
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([organizationId])
+}
+
+model QboConnection {
+  id              String           @id @default(cuid())
+  organizationId  String           @unique
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  realmId         String?
+  companyName     String?
+  accessToken     String?
+  refreshToken    String?
+  tokenExpiresAt  DateTime?
+  status          ConnectionStatus @default(DISCONNECTED)
+  lastSyncedAt    DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+}
+
+model PraConnection {
+  id             String           @id @default(cuid())
+  organizationId String           @unique
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  posId          String?
+  environment    String           @default("sandbox")
+  apiUrl         String?
+  apiToken       String?
+  status         ConnectionStatus @default(DISCONNECTED)
+  lastPostedAt   DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model FieldMapping {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  section        MappingSection @default(HEADER)
+  sourceField    String
+  targetField    String
+  transform      String?
+  isRequired     Boolean        @default(false)
+  sortOrder      Int            @default(0)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([organizationId, section, targetField])
+  @@index([organizationId, section, sortOrder])
+}
+
+model InvoiceSync {
+  id               String            @id @default(cuid())
+  organizationId   String
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  qboInvoiceId     String
+  usin             String?
+  fiscalInvoiceNo  String?
+  status           InvoiceSyncStatus @default(PENDING)
+  totalAmount      Float?
+  customerName     String?
+  praPayload       Json?
+  praResponse      Json?
+  errorMessage     String?
+  postedAt         DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@unique([organizationId, qboInvoiceId])
+  @@index([organizationId, status])
+}
+
+model AuditLog {
+  id             String        @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  userId         String?
+  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action         String
+  entity         String?
+  meta           Json?
+  createdAt      DateTime      @default(now())
+
+  @@index([organizationId])
+  @@index([createdAt])
+}
