@@ -32,10 +32,15 @@ export class QboService {
       : 'https://sandbox-quickbooks.api.intuit.com';
   }
 
-  getAuthUri(organizationId: string, userId: string) {
+  getAuthUri(organizationId: string, userId: string, returnOrigin?: string) {
     const oauth = this.createClient();
     const state = Buffer.from(
-      JSON.stringify({ organizationId, userId, t: Date.now() }),
+      JSON.stringify({
+        organizationId,
+        userId,
+        returnOrigin: returnOrigin || null,
+        t: Date.now(),
+      }),
     ).toString('base64url');
     return oauth.authorizeUri({
       scope: [OAuthClient.scopes.Accounting],
@@ -50,7 +55,11 @@ export class QboService {
     const realmId = query.realmId || token.realmId;
     if (!query.state) throw new BadRequestException('Missing OAuth state');
 
-    let state: { organizationId: string; userId: string };
+    let state: {
+      organizationId: string;
+      userId: string;
+      returnOrigin?: string | null;
+    };
     try {
       state = JSON.parse(Buffer.from(query.state, 'base64url').toString('utf8'));
     } catch {
@@ -109,7 +118,7 @@ export class QboService {
       },
     });
 
-    return qbo;
+    return { qbo, returnOrigin: state.returnOrigin };
   }
 
   private async ensureTokens(organizationId: string) {

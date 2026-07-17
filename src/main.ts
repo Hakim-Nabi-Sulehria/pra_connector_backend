@@ -1,15 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { isAllowedFrontendOrigin } from './common/allowed-origins';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const http = app.getHttpAdapter().getInstance();
+  http.set('trust proxy', 1);
   app.setGlobalPrefix('api');
-
-  const configured = (process.env.FRONTEND_URL || 'http://localhost:5173')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
 
   app.enableCors({
     origin: (
@@ -17,11 +15,7 @@ async function bootstrap() {
       callback: (err: Error | null, allow?: boolean) => void,
     ) => {
       if (!origin) return callback(null, true);
-      const allowed =
-        configured.includes(origin) ||
-        origin.includes('localhost') ||
-        origin.endsWith('.vercel.app');
-      return callback(null, allowed);
+      return callback(null, isAllowedFrontendOrigin(origin));
     },
     credentials: true,
   });

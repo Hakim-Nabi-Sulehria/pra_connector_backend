@@ -185,8 +185,12 @@ export class CustomerController {
   }
 
   @Get('qbo/auth-url')
-  authUrl(@Req() req: any) {
-    const url = this.qbo.getAuthUri(this.orgId(req), req.user.id);
+  authUrl(@Req() req: any, @Query('returnOrigin') returnOrigin?: string) {
+    const url = this.qbo.getAuthUri(
+      this.orgId(req),
+      req.user.id,
+      returnOrigin,
+    );
     return { url };
   }
 

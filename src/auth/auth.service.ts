@@ -33,6 +33,17 @@ export class AuthService {
 
   private sanitize(user: any) {
     const { passwordHash, ...safe } = user;
+    if (safe.organization?.qbo) {
+      const { accessToken, refreshToken, ...qboSafe } = safe.organization.qbo;
+      safe.organization = { ...safe.organization, qbo: qboSafe };
+    }
+    if (safe.organization?.pra) {
+      const { apiToken, ...praSafe } = safe.organization.pra;
+      safe.organization = {
+        ...safe.organization,
+        pra: { ...praSafe, hasToken: Boolean(apiToken) },
+      };
+    }
     return safe;
   }
 
