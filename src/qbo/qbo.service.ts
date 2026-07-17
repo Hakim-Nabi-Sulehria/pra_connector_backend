@@ -340,47 +340,106 @@ export class QboService {
     stringValue: string,
   ) {
     const defs = await this.getSalesCustomFieldDefs(organizationId);
-    const def = defs.find(
-      (d) => d.name.toLowerCase() === fieldName.toLowerCase(),
-    );
-    if (!def) {
-      throw new BadRequestException(
-        `QBO sales custom field "${fieldName}" not found in company Preferences. Available: ${
-          defs.map((d) => d.name).join(', ') || '(none)'
-        }. Note: only legacy sales-form custom fields (up to 3) are writable via Invoice API.`,
-      );
-    }
-
     const invoice = await this.getInvoice(organizationId, invoiceId);
     if (!invoice?.Id || invoice.SyncToken == null) {
       throw new BadRequestException('Invoice not found in QuickBooks');
     }
 
+    const existing = Array.isArray(invoice.CustomField) ? invoice.CustomField : [];
+    const fromInvoice = existing.find(
+      (cf: any) =>
+        String(cf?.Name || '').toLowerCase() === fieldName.toLowerCase(),
+    );
+    const fromPrefs = defs.find(
+      (d) => d.name.toLowerCase() === fieldName.toLowerCase(),
+    );
+
+    // Prefer Preference DefinitionId, then invoice CustomField, then legacy slots 1..3.
+    const candidates: { definitionId: string; name: string }[] = [];
+    if (fromPrefs) {
+      candidates.push({ definitionId: fromPrefs.definitionId, name: fromPrefs.name });
+    }
+    if (fromInvoice?.DefinitionId != null) {
+      candidates.push({
+        definitionId: String(fromInvoice.DefinitionId),
+        name: String(fromInvoice.Name || fieldName),
+      });
+    }
+    // Last resort: try classic legacy DefinitionIds (SalesCustom 1/2/3)
+    for (const id of ['1', '2', '3']) {
+      if (!candidates.some((c) => c.definitionId === id)) {
+        candidates.push({ definitionId: id, name: fieldName });
+      }
+    }
+
     const { realmId, accessToken } = await this.ensureTokens(organizationId);
-    const payload = {
-      Id: String(invoice.Id),
-      SyncToken: String(invoice.SyncToken),
-      sparse: true,
-      CustomField: [
-        {
-          DefinitionId: def.definitionId,
-          Name: def.name,
-          Type: 'StringType',
-          StringValue: stringValue,
-        },
-      ],
-    };
-
     const url = `${this.baseUrl()}/v3/company/${realmId}/invoice?minorversion=75`;
-    const response = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-    });
+    const attempts: { definitionId: string; ok: boolean; error?: string; invoice?: any }[] = [];
 
-    const updated = response.data?.Invoice || response.data;
-    return this.enrichInvoiceCustomFields(updated, defs);
+    for (const candidate of candidates) {
+      try {
+        const payload = {
+          Id: String(invoice.Id),
+          SyncToken: String(
+            attempts.find((a) => a.ok && a.invoice?.SyncToken)?.invoice?.SyncToken ??
+              invoice.SyncToken,
+          ),
+          sparse: true,
+          CustomField: [
+            {
+              DefinitionId: candidate.definitionId,
+              Name: candidate.name,
+              Type: 'StringType',
+              StringValue: stringValue,
+            },
+          ],
+        };
+        // Always re-read SyncToken before each attempt after a success path change
+        const latest = await this.getInvoice(organizationId, invoiceId);
+        payload.SyncToken = String(latest.SyncToken);
+        payload.Id = String(latest.Id);
+
+        const response = await axios.post(url, payload, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+        });
+        const updated = response.data?.Invoice || response.data;
+        attempts.push({
+          definitionId: candidate.definitionId,
+          ok: true,
+          invoice: updated,
+        });
+        return {
+          ...this.enrichInvoiceCustomFields(updated, defs),
+          _writeMeta: {
+            fieldName,
+            stringValue,
+            definitionIdUsed: candidate.definitionId,
+            attempts,
+          },
+        };
+      } catch (e: any) {
+        const msg =
+          e?.response?.data?.Fault?.Error?.[0]?.Message ||
+          e?.response?.data?.Fault?.Error?.[0]?.Detail ||
+          e?.message ||
+          'QBO update failed';
+        attempts.push({
+          definitionId: candidate.definitionId,
+          ok: false,
+          error: msg,
+        });
+      }
+    }
+
+    throw new BadRequestException({
+      message: `Could not update QBO custom field "${fieldName}". REST API may not support this field (new Custom Fields vs legacy sales-form fields).`,
+      availablePrefs: defs,
+      invoiceCustomFields: existing,
+      attempts,
+    });
   }
 }

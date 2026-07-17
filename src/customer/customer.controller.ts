@@ -77,6 +77,14 @@ class UpdateSourceDto {
   sourceField!: string;
 }
 
+class UpdateQboCustomFieldDto {
+  @IsString()
+  fieldName!: string;
+
+  @IsString()
+  value!: string;
+}
+
 class AttachFiscalDto {
   @IsString()
   qboInvoiceId!: string;
@@ -236,6 +244,35 @@ export class CustomerController {
   async qboCustomFields(@Req() req: any) {
     const defs = await this.qbo.getSalesCustomFieldDefs(this.orgId(req));
     return { ok: true, count: defs.length, fields: defs };
+  }
+
+  @Post('qbo/invoices/:id/custom-field')
+  async updateQboCustomField(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: UpdateQboCustomFieldDto,
+  ) {
+    const updated = await this.qbo.updateInvoiceCustomField(
+      this.orgId(req),
+      id,
+      dto.fieldName,
+      dto.value,
+    );
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId: this.orgId(req),
+        userId: req.user.id,
+        action: 'QBO_CUSTOM_FIELD_UPDATE',
+        entity: 'Invoice',
+        meta: {
+          qboInvoiceId: id,
+          fieldName: dto.fieldName,
+          value: dto.value,
+          definitionIdUsed: (updated as any)?._writeMeta?.definitionIdUsed,
+        },
+      },
+    });
+    return { ok: true, invoice: updated };
   }
 
   @Get('qbo/invoices')
