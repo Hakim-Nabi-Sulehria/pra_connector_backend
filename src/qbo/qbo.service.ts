@@ -188,7 +188,8 @@ export class QboService {
 
   async getInvoice(organizationId: string, invoiceId: string) {
     const { realmId, accessToken } = await this.ensureTokens(organizationId);
-    const url = `${this.baseUrl()}/v3/company/${realmId}/invoice/${invoiceId}?minorversion=75`;
+    // include=enhancedAllCustomFields helps surface custom field values when supported.
+    const url = `${this.baseUrl()}/v3/company/${realmId}/invoice/${invoiceId}?minorversion=75&include=enhancedAllCustomFields`;
     const response = await axios.get(url, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
