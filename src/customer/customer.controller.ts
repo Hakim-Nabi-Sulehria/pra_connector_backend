@@ -96,6 +96,15 @@ class AttachFiscalDto {
   @IsOptional()
   @IsString()
   fiscalInvoiceNo?: string;
+
+  /** QBO sales custom field name to write (default: Fiscal Invoice) */
+  @IsOptional()
+  @IsString()
+  qboCustomFieldName?: string;
+
+  /** When true (default), also sparse-update the QBO invoice custom field */
+  @IsOptional()
+  writeToQbo?: boolean;
 }
 
 @Controller('customer')
@@ -223,6 +232,12 @@ export class CustomerController {
     return this.qbo.getCompany(this.orgId(req));
   }
 
+  @Get('qbo/custom-fields')
+  async qboCustomFields(@Req() req: any) {
+    const defs = await this.qbo.getSalesCustomFieldDefs(this.orgId(req));
+    return { ok: true, count: defs.length, fields: defs };
+  }
+
   @Get('qbo/invoices')
   async qboInvoices(@Req() req: any, @Query('max') max?: string) {
     const maxResults = Math.min(Math.max(Number(max) || 25, 1), 100);
@@ -333,12 +348,30 @@ export class CustomerController {
     const fiscalInvoiceNo =
       dto.fiscalInvoiceNo?.trim() ||
       `TEST-FISCAL-1002-${Date.now().toString().slice(-8)}`;
+    const fieldName = dto.qboCustomFieldName?.trim() || 'Fiscal Invoice';
+    const writeToQbo = dto.writeToQbo !== false;
 
     let qboInvoice: any = null;
     try {
       qboInvoice = await this.qbo.getInvoice(organizationId, dto.qboInvoiceId);
     } catch {
       qboInvoice = null;
+    }
+
+    let qboWrite: any = null;
+    let qboWriteError: string | null = null;
+    if (writeToQbo) {
+      try {
+        qboWrite = await this.qbo.updateInvoiceCustomField(
+          organizationId,
+          dto.qboInvoiceId,
+          fieldName,
+          fiscalInvoiceNo,
+        );
+        qboInvoice = qboWrite;
+      } catch (e: any) {
+        qboWriteError = e?.message || 'Failed to write custom field to QBO';
+      }
     }
 
     const data = {
@@ -355,6 +388,9 @@ export class CustomerController {
         Code: '100',
         Response: 'Test fiscal invoice number attached successfully.',
         Test: true,
+        qboCustomFieldName: fieldName,
+        qboWriteOk: Boolean(qboWrite) && !qboWriteError,
+        qboWriteError,
       },
     };
 
@@ -383,11 +419,19 @@ export class CustomerController {
           qboInvoiceId: dto.qboInvoiceId,
           usin: row.usin,
           fiscalInvoiceNo,
+          qboCustomFieldName: fieldName,
+          qboWriteOk: Boolean(qboWrite) && !qboWriteError,
+          qboWriteError,
         },
       },
     });
 
-    return row;
+    return {
+      ...row,
+      qboWriteOk: Boolean(qboWrite) && !qboWriteError,
+      qboWriteError,
+      qboCustomFields: qboInvoice?.CustomField || null,
+    };
   }
 
   @Post('invoices/demo-seed')

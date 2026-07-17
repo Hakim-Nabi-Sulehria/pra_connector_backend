@@ -186,6 +186,119 @@ export class QboService {
     return { realmId, company: response.data?.CompanyInfo };
   }
 
+  async getInvoice(organizationId: string, invoiceId: string) {
+    const { realmId, accessToken } = await this.ensureTokens(organizationId);
+    const url = `${this.baseUrl()}/v3/company/${realmId}/invoice/${invoiceId}?minorversion=75`;
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    });
+    return response.data?.Invoice;
+  }
+
+  /**
+   * Legacy sales-form custom fields from Preferences.
+   * DefinitionId is the trailing digit of SalesFormsPrefs.SalesCustomName#
+   * (typically "1", "2", or "3").
+   */
+  async getSalesCustomFieldDefs(organizationId: string): Promise<
+    { definitionId: string; name: string; enabled: boolean }[]
+  > {
+    const { realmId, accessToken } = await this.ensureTokens(organizationId);
+    const url = `${this.baseUrl()}/v3/company/${realmId}/preferences?minorversion=75`;
+    const response = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    });
+
+    const groups = response.data?.Preferences?.SalesFormsPrefs?.CustomField || [];
+    const enabled: Record<string, boolean> = {};
+    const names: Record<string, string> = {};
+
+    for (const group of groups) {
+      for (const cf of group?.CustomField || []) {
+        const key = String(cf?.Name || '');
+        const useMatch = key.match(/UseSalesCustom(\d+)$/i);
+        if (useMatch) {
+          enabled[useMatch[1]] = Boolean(cf?.BooleanValue);
+          continue;
+        }
+        const nameMatch = key.match(/SalesCustomName(\d+)$/i);
+        if (nameMatch) {
+          names[nameMatch[1]] = String(cf?.StringValue || '').trim();
+        }
+      }
+    }
+
+    return Object.keys({ ...enabled, ...names })
+      .sort()
+      .map((id) => ({
+        definitionId: id,
+        name: names[id] || `CustomField${id}`,
+        enabled: enabled[id] !== false,
+      }))
+      .filter((d) => d.enabled && d.name);
+  }
+
+  /** Merge Preferences definitions into invoice.CustomField so empty fields still appear. */
+  enrichInvoiceCustomFields(
+    invoice: any,
+    defs: { definitionId: string; name: string }[],
+  ) {
+    if (!invoice) return invoice;
+    const existing = Array.isArray(invoice.CustomField) ? invoice.CustomField : [];
+    const byId = new Map<string, any>();
+    const byName = new Map<string, any>();
+
+    for (const cf of existing) {
+      if (cf?.DefinitionId != null) byId.set(String(cf.DefinitionId), cf);
+      if (cf?.Name) byName.set(String(cf.Name).toLowerCase(), cf);
+    }
+
+    const merged = defs.map((def) => {
+      const found =
+        byId.get(def.definitionId) ||
+        byName.get(def.name.toLowerCase()) ||
+        null;
+      return {
+        DefinitionId: def.definitionId,
+        Name: def.name,
+        Type: found?.Type || 'StringType',
+        StringValue:
+          found?.StringValue ??
+          found?.BooleanValue ??
+          found?.DateValue ??
+          found?.NumberValue ??
+          null,
+      };
+    });
+
+    // Keep any unexpected fields from API that aren't in Preferences defs.
+    for (const cf of existing) {
+      const id = cf?.DefinitionId != null ? String(cf.DefinitionId) : '';
+      if (id && defs.some((d) => d.definitionId === id)) continue;
+      const name = String(cf?.Name || '').toLowerCase();
+      if (name && defs.some((d) => d.name.toLowerCase() === name)) continue;
+      merged.push({
+        DefinitionId: id || 'unknown',
+        Name: cf?.Name || 'CustomField',
+        Type: cf?.Type || 'StringType',
+        StringValue:
+          cf?.StringValue ??
+          cf?.BooleanValue ??
+          cf?.DateValue ??
+          cf?.NumberValue ??
+          null,
+      });
+    }
+
+    return { ...invoice, CustomField: merged };
+  }
+
   async listInvoices(organizationId: string, maxResults = 10) {
     const { realmId, accessToken } = await this.ensureTokens(organizationId);
     const query = encodeURIComponent(`select * from Invoice maxresults ${maxResults}`);
@@ -199,28 +312,74 @@ export class QboService {
     const summaries = response.data?.QueryResponse?.Invoice || [];
     if (!summaries.length) return [];
 
-    // Fetch each invoice individually so CustomField (e.g. HS code) is included.
+    let defs: { definitionId: string; name: string }[] = [];
+    try {
+      defs = await this.getSalesCustomFieldDefs(organizationId);
+    } catch {
+      defs = [];
+    }
+
     const full = await Promise.all(
       summaries.map(async (inv: { Id: string }) => {
         try {
-          return await this.getInvoice(organizationId, String(inv.Id));
+          const detail = await this.getInvoice(organizationId, String(inv.Id));
+          return this.enrichInvoiceCustomFields(detail, defs);
         } catch {
-          return inv;
+          return this.enrichInvoiceCustomFields(inv, defs);
         }
       }),
     );
     return full.filter(Boolean);
   }
 
-  async getInvoice(organizationId: string, invoiceId: string) {
+  async updateInvoiceCustomField(
+    organizationId: string,
+    invoiceId: string,
+    fieldName: string,
+    stringValue: string,
+  ) {
+    const defs = await this.getSalesCustomFieldDefs(organizationId);
+    const def = defs.find(
+      (d) => d.name.toLowerCase() === fieldName.toLowerCase(),
+    );
+    if (!def) {
+      throw new BadRequestException(
+        `QBO sales custom field "${fieldName}" not found in company Preferences. Available: ${
+          defs.map((d) => d.name).join(', ') || '(none)'
+        }. Note: only legacy sales-form custom fields (up to 3) are writable via Invoice API.`,
+      );
+    }
+
+    const invoice = await this.getInvoice(organizationId, invoiceId);
+    if (!invoice?.Id || invoice.SyncToken == null) {
+      throw new BadRequestException('Invoice not found in QuickBooks');
+    }
+
     const { realmId, accessToken } = await this.ensureTokens(organizationId);
-    const url = `${this.baseUrl()}/v3/company/${realmId}/invoice/${invoiceId}?minorversion=75`;
-    const response = await axios.get(url, {
+    const payload = {
+      Id: String(invoice.Id),
+      SyncToken: String(invoice.SyncToken),
+      sparse: true,
+      CustomField: [
+        {
+          DefinitionId: def.definitionId,
+          Name: def.name,
+          Type: 'StringType',
+          StringValue: stringValue,
+        },
+      ],
+    };
+
+    const url = `${this.baseUrl()}/v3/company/${realmId}/invoice?minorversion=75`;
+    const response = await axios.post(url, payload, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: 'application/json',
+        'Content-Type': 'application/json',
       },
     });
-    return response.data?.Invoice;
+
+    const updated = response.data?.Invoice || response.data;
+    return this.enrichInvoiceCustomFields(updated, defs);
   }
 }
