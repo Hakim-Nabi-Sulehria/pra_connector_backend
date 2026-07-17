@@ -174,6 +174,9 @@ export class CustomerController {
     return {
       ...org,
       qboEnvironment: process.env.QBO_ENVIRONMENT || 'sandbox',
+      qboRedirectUri:
+        process.env.QBO_REDIRECT_URI ||
+        'https://pra-connector-backend.onrender.com/api/qbo/callback',
       pra: org.pra
         ? {
             ...praSafe,

@@ -9,10 +9,18 @@ import { PrismaService } from '../prisma/prisma.service';
 export class QboService {
   constructor(private prisma: PrismaService) {}
 
+  private env(key: string) {
+    return (process.env[key] || '').trim().replace(/^["']|["']$/g, '');
+  }
+
   private createClient() {
-    const clientId = process.env.QBO_CLIENT_ID;
-    const clientSecret = process.env.QBO_CLIENT_SECRET;
-    const redirectUri = process.env.QBO_REDIRECT_URI;
+    const clientId = this.env('QBO_CLIENT_ID');
+    const clientSecret = this.env('QBO_CLIENT_SECRET');
+    const redirectUri = this.env('QBO_REDIRECT_URI');
+    const environment =
+      this.env('QBO_ENVIRONMENT').toLowerCase() === 'production'
+        ? 'production'
+        : 'sandbox';
     if (!clientId || !clientSecret || !redirectUri) {
       throw new BadRequestException(
         'QBO credentials missing. Set QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_REDIRECT_URI in backend .env',
@@ -21,7 +29,7 @@ export class QboService {
     return new OAuthClient({
       clientId,
       clientSecret,
-      environment: process.env.QBO_ENVIRONMENT || 'sandbox',
+      environment,
       redirectUri,
     });
   }

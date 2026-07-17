@@ -11,3 +11,8 @@ services:
         value: 22.22.0
       - key: FRONTEND_URL
         value: https://pra-connector-frontend.vercel.app
+      - key: QBO_REDIRECT_URI
+        value: https://pra-connector-backend.onrender.com/api/qbo/callback
+      # Development keys from Intuit → sandbox. Production keys → production.
+      - key: QBO_ENVIRONMENT
+        value: sandbox

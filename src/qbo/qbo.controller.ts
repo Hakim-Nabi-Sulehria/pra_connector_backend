@@ -23,7 +23,13 @@ export class QboController {
       frontend = resolveFrontendOrigin(result.returnOrigin || returnOrigin);
       return res.redirect(`${frontend}/app/connections?qbo=connected`);
     } catch (err: any) {
-      const msg = encodeURIComponent(err?.message || 'QBO OAuth failed');
+      const raw = String(err?.error || err?.authResponse?.json?.error || err?.message || 'QBO OAuth failed');
+      let friendly = raw;
+      if (/invalid_client/i.test(raw)) {
+        friendly =
+          'invalid_client: Intuit rejected the app credentials. On Render, Development keys need QBO_ENVIRONMENT=sandbox; Production keys need QBO_ENVIRONMENT=production. Also confirm QBO_CLIENT_ID / QBO_CLIENT_SECRET / Redirect URI match the Intuit Developer app exactly.';
+      }
+      const msg = encodeURIComponent(friendly);
       return res.redirect(`${frontend}/app/connections?qbo=error&message=${msg}`);
     }
   }
