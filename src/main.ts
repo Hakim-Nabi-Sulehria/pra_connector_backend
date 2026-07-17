@@ -29,5 +29,8 @@ async function bootstrap() {
   const port = process.env.PORT || 4000;
   await app.listen(port);
   console.log(`PRA Connector API → http://localhost:${port}/api`);
+  console.log(
+    `QBO config → env=${process.env.QBO_ENVIRONMENT || 'sandbox'} redirect=${process.env.QBO_REDIRECT_URI || '(unset)'} frontend=${process.env.FRONTEND_URL || '(unset)'}`,
+  );
 }
 bootstrap();
