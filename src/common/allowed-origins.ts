@@ -1,8 +1,17 @@
+/** Stable production frontend (Vercel alias). Preview URLs change per deploy. */
+const STABLE_FRONTEND = 'https://pra-connector-frontend.vercel.app';
+
 export function getConfiguredOrigins(): string[] {
-  return (process.env.FRONTEND_URL || 'http://localhost:5173')
+  const fromEnv = (process.env.FRONTEND_URL || '')
     .split(',')
     .map((o) => o.trim())
     .filter(Boolean);
+  // Always keep the stable alias as a safe fallback, even if env is unset or
+  // points at an old ephemeral preview deployment.
+  if (!fromEnv.includes(STABLE_FRONTEND)) {
+    fromEnv.push(STABLE_FRONTEND);
+  }
+  return fromEnv.length ? fromEnv : [STABLE_FRONTEND];
 }
 
 export function isAllowedFrontendOrigin(origin: string): boolean {
@@ -16,10 +25,13 @@ export function isAllowedFrontendOrigin(origin: string): boolean {
 }
 
 export function resolveFrontendOrigin(preferred?: string | null): string {
-  const configured = getConfiguredOrigins();
-  const fallback = configured[0] || 'http://localhost:5173';
   if (preferred && isAllowedFrontendOrigin(preferred)) {
     return preferred.replace(/\/$/, '');
   }
-  return fallback;
+  const configured = getConfiguredOrigins();
+  // Prefer a stable, non-preview origin over an ephemeral preview URL.
+  const stable = configured.find(
+    (o) => !/-[a-z0-9]{9,}-.*\.vercel\.app$/.test(o),
+  );
+  return (stable || configured[0] || STABLE_FRONTEND).replace(/\/$/, '');
 }

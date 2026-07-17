@@ -9,3 +9,5 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 22.22.0
+      - key: FRONTEND_URL
+        value: https://pra-connector-frontend.vercel.app
