@@ -24,14 +24,19 @@ export function isAllowedFrontendOrigin(origin: string): boolean {
   );
 }
 
+function isPreviewOrigin(origin: string): boolean {
+  // Vercel preview deployments look like project-<hash>-<scope>.vercel.app
+  return /-[a-z0-9]{6,}-[a-z0-9-]+\.vercel\.app$/.test(origin);
+}
+
 export function resolveFrontendOrigin(preferred?: string | null): string {
   if (preferred && isAllowedFrontendOrigin(preferred)) {
     return preferred.replace(/\/$/, '');
   }
-  const configured = getConfiguredOrigins();
-  // Prefer a stable, non-preview origin over an ephemeral preview URL.
-  const stable = configured.find(
-    (o) => !/-[a-z0-9]{9,}-.*\.vercel\.app$/.test(o),
+  // No usable return origin: prefer a stable, non-preview configured origin,
+  // otherwise fall back to the known stable alias (never an ephemeral preview).
+  const stable = getConfiguredOrigins().find(
+    (o) => !isPreviewOrigin(o) && !o.includes('localhost'),
   );
-  return (stable || configured[0] || STABLE_FRONTEND).replace(/\/$/, '');
+  return (stable || STABLE_FRONTEND).replace(/\/$/, '');
 }
