@@ -196,7 +196,20 @@ export class QboService {
         Accept: 'application/json',
       },
     });
-    return response.data?.QueryResponse?.Invoice || [];
+    const summaries = response.data?.QueryResponse?.Invoice || [];
+    if (!summaries.length) return [];
+
+    // Fetch each invoice individually so CustomField (e.g. HS code) is included.
+    const full = await Promise.all(
+      summaries.map(async (inv: { Id: string }) => {
+        try {
+          return await this.getInvoice(organizationId, String(inv.Id));
+        } catch {
+          return inv;
+        }
+      }),
+    );
+    return full.filter(Boolean);
   }
 
   async getInvoice(organizationId: string, invoiceId: string) {

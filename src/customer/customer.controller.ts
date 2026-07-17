@@ -203,19 +203,13 @@ export class CustomerController {
   }
 
   @Get('qbo/invoices')
-  async qboInvoices(@Req() req: any) {
-    const invoices = await this.qbo.listInvoices(this.orgId(req), 10);
+  async qboInvoices(@Req() req: any, @Query('max') max?: string) {
+    const maxResults = Math.min(Math.max(Number(max) || 25, 1), 100);
+    const invoices = await this.qbo.listInvoices(this.orgId(req), maxResults);
     return {
       ok: true,
       count: invoices.length,
-      invoices: invoices.map((inv: any) => ({
-        Id: inv.Id,
-        DocNumber: inv.DocNumber,
-        TxnDate: inv.TxnDate,
-        TotalAmt: inv.TotalAmt,
-        CustomerRef: inv.CustomerRef,
-        Balance: inv.Balance,
-      })),
+      invoices,
     };
   }
 
