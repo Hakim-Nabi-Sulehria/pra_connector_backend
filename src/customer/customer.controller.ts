@@ -9,7 +9,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsArray, IsIn, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsIn, IsNumber, IsOptional, IsString, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { MappingSection, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -75,6 +75,27 @@ class MoveMappingDto {
 class UpdateSourceDto {
   @IsString()
   sourceField!: string;
+}
+
+class AttachFiscalDto {
+  @IsString()
+  qboInvoiceId!: string;
+
+  @IsOptional()
+  @IsString()
+  usin?: string;
+
+  @IsOptional()
+  @IsString()
+  customerName?: string;
+
+  @IsOptional()
+  @IsNumber()
+  totalAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  fiscalInvoiceNo?: string;
 }
 
 @Controller('customer')
@@ -304,6 +325,69 @@ export class CustomerController {
       orderBy: { createdAt: 'desc' },
       take: 50,
     });
+  }
+
+  @Post('invoices/attach-fiscal')
+  async attachFiscal(@Req() req: any, @Body() dto: AttachFiscalDto) {
+    const organizationId = this.orgId(req);
+    const fiscalInvoiceNo =
+      dto.fiscalInvoiceNo?.trim() ||
+      `TEST-FISCAL-1002-${Date.now().toString().slice(-8)}`;
+
+    let qboInvoice: any = null;
+    try {
+      qboInvoice = await this.qbo.getInvoice(organizationId, dto.qboInvoiceId);
+    } catch {
+      qboInvoice = null;
+    }
+
+    const data = {
+      usin: dto.usin || qboInvoice?.DocNumber || dto.qboInvoiceId,
+      customerName:
+        dto.customerName || qboInvoice?.CustomerRef?.name || null,
+      totalAmount:
+        dto.totalAmount ??
+        (qboInvoice?.TotalAmt != null ? Number(qboInvoice.TotalAmt) : null),
+      status: 'POSTED' as const,
+      fiscalInvoiceNo,
+      postedAt: new Date(),
+      praResponse: {
+        Code: '100',
+        Response: 'Test fiscal invoice number attached successfully.',
+        Test: true,
+      },
+    };
+
+    const row = await this.prisma.invoiceSync.upsert({
+      where: {
+        organizationId_qboInvoiceId: {
+          organizationId,
+          qboInvoiceId: dto.qboInvoiceId,
+        },
+      },
+      create: {
+        organizationId,
+        qboInvoiceId: dto.qboInvoiceId,
+        ...data,
+      },
+      update: data,
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId,
+        userId: req.user.id,
+        action: 'INVOICE_ATTACH_FISCAL_TEST',
+        entity: 'InvoiceSync',
+        meta: {
+          qboInvoiceId: dto.qboInvoiceId,
+          usin: row.usin,
+          fiscalInvoiceNo,
+        },
+      },
+    });
+
+    return row;
   }
 
   @Post('invoices/demo-seed')
