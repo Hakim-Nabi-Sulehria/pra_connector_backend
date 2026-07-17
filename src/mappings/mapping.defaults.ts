@@ -100,6 +100,40 @@ export function resolveSampleValue(
   }
   if (sourceField === 'custom.PCTCode') return null;
 
+  // CustomField.<Name> or Line.CustomField.<Name>
+  const customMatch = sourceField.match(/^(?:Line\.)?CustomField\.(.+)$/i);
+  if (customMatch) {
+    const name = customMatch[1];
+    const fromInvoice = (invoice?.CustomField || []).find(
+      (cf: any) => String(cf?.Name) === name,
+    );
+    if (fromInvoice) {
+      return (
+        fromInvoice.StringValue ??
+        fromInvoice.BooleanValue ??
+        fromInvoice.DateValue ??
+        fromInvoice.NumberValue ??
+        null
+      );
+    }
+    const line = (invoice?.Line || []).find(
+      (l: any) => l.DetailType === 'SalesItemLineDetail',
+    );
+    const fromLine = (line?.CustomField || []).find(
+      (cf: any) => String(cf?.Name) === name,
+    );
+    if (fromLine) {
+      return (
+        fromLine.StringValue ??
+        fromLine.BooleanValue ??
+        fromLine.DateValue ??
+        fromLine.NumberValue ??
+        null
+      );
+    }
+    return null;
+  }
+
   // Support indexed path like TxnTaxDetail.TaxLine.0.TaxLineDetail.TaxPercent
   if (/\.\d+\./.test(sourceField) || /\.\d+$/.test(sourceField)) {
     const parts = sourceField.split('.');
@@ -144,6 +178,21 @@ export function collectQboKeys(invoice: any): string[] {
     'custom.PCTCode',
     '',
   ]);
+
+  const addCustomFields = (fields: any[] | undefined, prefix: string) => {
+    if (!Array.isArray(fields)) return;
+    for (const cf of fields) {
+      const name = String(cf?.Name ?? cf?.DefinitionId ?? '').trim();
+      if (!name) continue;
+      keys.add(`${prefix}.${name}`);
+    }
+  };
+
+  addCustomFields(invoice?.CustomField, 'CustomField');
+  for (const line of invoice?.Line || []) {
+    addCustomFields(line?.CustomField, 'Line.CustomField');
+  }
+
   if (invoice?.DocNumber != null) keys.add('DocNumber');
   return Array.from(keys);
 }
