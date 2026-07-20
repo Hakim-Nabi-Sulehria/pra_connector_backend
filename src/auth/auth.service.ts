@@ -126,13 +126,17 @@ export class AuthService {
     const otp = String(randomInt(100000, 1000000));
     const expiresAt = this.nowPlusMinutes(10);
 
-    await this.prisma.passwordResetOtp.create({
+    await this.prisma.auditLog.create({
       data: {
-        email,
-        otpHash: this.otpHash(otp),
-        expiresAt,
-        verifiedAt: null,
-        usedAt: null,
+        userId: user.id,
+        organizationId: user.organizationId,
+        action: 'PASSWORD_RESET_OTP_REQUEST',
+        entity: 'PasswordResetOtp',
+        meta: {
+          email,
+          otpHash: this.otpHash(otp),
+          expiresAt: expiresAt.toISOString(),
+        },
       },
     });
 
@@ -145,22 +149,40 @@ export class AuthService {
     const email = dto.email.toLowerCase();
     const otpHash = this.otpHash(dto.otp.trim());
 
-    const token = await this.prisma.passwordResetOtp.findFirst({
-      where: {
-        email,
-        expiresAt: { gt: new Date() },
-        usedAt: null,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (!token || token.otpHash !== otpHash) {
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user || !user.isActive || user.role === Role.SUPER_ADMIN) {
       throw new UnauthorizedException('Invalid or expired OTP');
     }
 
-    await this.prisma.passwordResetOtp.update({
-      where: { id: token.id },
-      data: { verifiedAt: new Date() },
+    const requests = await this.prisma.auditLog.findMany({
+      where: {
+        action: 'PASSWORD_RESET_OTP_REQUEST',
+        entity: 'PasswordResetOtp',
+        organizationId: user.organizationId,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+
+    const matched = requests.find((l) => {
+      const m: any = l.meta || {};
+      if (m?.email !== email) return false;
+      if (m?.otpHash !== otpHash) return false;
+      if (!m?.expiresAt) return false;
+      return new Date(m.expiresAt).getTime() > Date.now();
+    });
+
+    if (!matched) throw new UnauthorizedException('Invalid or expired OTP');
+
+    const m: any = matched.meta || {};
+    await this.prisma.auditLog.create({
+      data: {
+        userId: user.id,
+        organizationId: user.organizationId,
+        action: 'PASSWORD_RESET_OTP_VERIFIED',
+        entity: 'PasswordResetOtp',
+        meta: { email, otpHash, expiresAt: m.expiresAt },
+      },
     });
 
     return { ok: true };
@@ -170,25 +192,47 @@ export class AuthService {
     const email = dto.email.toLowerCase();
     const otpHash = this.otpHash(dto.otp.trim());
 
-    const token = await this.prisma.passwordResetOtp.findFirst({
-      where: {
-        email,
-        otpHash,
-        expiresAt: { gt: new Date() },
-        usedAt: null,
-        verifiedAt: { not: null },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (!token) {
-      throw new UnauthorizedException('OTP not verified or expired');
-    }
-
     const user = await this.prisma.user.findUnique({ where: { email } });
     if (!user || !user.isActive || user.role === Role.SUPER_ADMIN) {
       throw new UnauthorizedException('Invalid reset request');
     }
+
+    const verified = await this.prisma.auditLog.findMany({
+      where: {
+        action: 'PASSWORD_RESET_OTP_VERIFIED',
+        entity: 'PasswordResetOtp',
+        organizationId: user.organizationId,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+
+    const matched = verified.find((l) => {
+      const m: any = l.meta || {};
+      if (m?.email !== email) return false;
+      if (m?.otpHash !== otpHash) return false;
+      if (!m?.expiresAt) return false;
+      return new Date(m.expiresAt).getTime() > Date.now();
+    });
+
+    if (!matched) throw new UnauthorizedException('OTP not verified or expired');
+
+    const usedLogs = await this.prisma.auditLog.findMany({
+      where: {
+        action: 'PASSWORD_RESET_OTP_USED',
+        entity: 'PasswordResetOtp',
+        organizationId: user.organizationId,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+    });
+
+    const alreadyUsed = usedLogs.some((l) => {
+      const m: any = l.meta || {};
+      return m?.email === email && m?.otpHash === otpHash;
+    });
+
+    if (alreadyUsed) throw new UnauthorizedException('OTP already used');
 
     const passwordHash = await bcrypt.hash(dto.newPassword, 10);
     await this.prisma.$transaction(async (tx) => {
@@ -196,9 +240,14 @@ export class AuthService {
         where: { id: user.id },
         data: { passwordHash },
       });
-      await tx.passwordResetOtp.update({
-        where: { id: token.id },
-        data: { usedAt: new Date() },
+      await tx.auditLog.create({
+        data: {
+          userId: user.id,
+          organizationId: user.organizationId,
+          action: 'PASSWORD_RESET_OTP_USED',
+          entity: 'PasswordResetOtp',
+          meta: { email, otpHash },
+        },
       });
     });
 

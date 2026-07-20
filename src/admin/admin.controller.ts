@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { ConnectionStatus, Prisma, QboEnvironment, Role } from '@prisma/client';
+import { ConnectionStatus, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/guards';
 import { CreateCompanyDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
@@ -441,107 +441,84 @@ export class AdminController {
     });
   }
 
-  private qboEnvToModel(env: string): QboEnvironment {
-    return env === 'production' ? QboEnvironment.PRODUCTION : QboEnvironment.SANDBOX;
-  }
-
-  private qboEnvToApi(env: QboEnvironment): 'sandbox' | 'production' {
-    return env === QboEnvironment.PRODUCTION ? 'production' : 'sandbox';
-  }
-
   @Get('qbo/config')
   async getQboConfig() {
-    try {
-      const runtime = await this.prisma.qboRuntimeSettings.upsert({
-        where: { id: 1 },
-        create: { id: 1, activeEnvironment: QboEnvironment.SANDBOX },
-        update: {},
-      });
+    // Store QBO client credentials snapshot in AuditLog meta
+    // to avoid schema-dependent migrations on production DB.
+    const last = await this.prisma.auditLog.findFirst({
+      where: { action: 'ADMIN_QBO_CONFIG_SNAPSHOT', entity: 'QboConfig' },
+      orderBy: { createdAt: 'desc' },
+    });
 
-      const sandbox = await this.prisma.qboClientCredential.findUnique({
-        where: { environment: QboEnvironment.SANDBOX },
-      });
-      const production = await this.prisma.qboClientCredential.findUnique({
-        where: { environment: QboEnvironment.PRODUCTION },
-      });
+    const meta: any = last?.meta || {};
+    const activeEnvironment: 'sandbox' | 'production' =
+      (meta?.activeEnvironment as any) === 'production' ? 'production' : 'sandbox';
 
-      const toResp = (c: any) => {
-        const hasClientSecret = Boolean(c?.clientSecret);
-        return {
-          clientId: c?.clientId ?? null,
-          clientSecretMasked: hasClientSecret ? '********' : null,
-          hasClientSecret,
-        };
-      };
-
+    const creds = meta?.credentials || {};
+    const toResp = (c: any) => {
+      const clientId = c?.clientId ?? null;
+      const hasClientSecret = Boolean(c?.clientSecret);
       return {
-        activeEnvironment: this.qboEnvToApi(runtime.activeEnvironment),
-        credentials: {
-          sandbox: toResp(sandbox),
-          production: toResp(production),
-        },
+        clientId,
+        clientSecretMasked: hasClientSecret ? '********' : null,
+        hasClientSecret,
       };
-    } catch (e: any) {
-      throw new BadRequestException(
-        e?.message || 'Failed to load QBO configuration',
-      );
-    }
+    };
+
+    return {
+      activeEnvironment,
+      credentials: {
+        sandbox: toResp(creds?.sandbox),
+        production: toResp(creds?.production),
+      },
+    };
   }
 
   @Patch('qbo/config')
   async patchQboConfig(@Body() dto: UpdateQboConfigDto, @Req() req: any) {
-    try {
-      const activeEnv = dto.activeEnvironment || dto.environment;
-      const envModel = this.qboEnvToModel(dto.environment);
-      const activeModel = this.qboEnvToModel(activeEnv);
+    const last = await this.prisma.auditLog.findFirst({
+      where: { action: 'ADMIN_QBO_CONFIG_SNAPSHOT', entity: 'QboConfig' },
+      orderBy: { createdAt: 'desc' },
+    });
 
-      const existing = await this.prisma.qboClientCredential.findUnique({
-        where: { environment: envModel },
-      });
+    const meta: any = last?.meta || {};
+    const prevCreds = meta?.credentials || {};
 
-      const next = await this.prisma.qboClientCredential.upsert({
-        where: { environment: envModel },
-        create: {
-          environment: envModel,
-          clientId: dto.clientId.trim(),
-          clientSecret: dto.clientSecret?.trim()
-            ? dto.clientSecret.trim()
-            : null,
-        },
-        update: {
-          clientId: dto.clientId.trim(),
-          clientSecret:
-            dto.clientSecret?.trim()
-              ? dto.clientSecret.trim()
-              : existing?.clientSecret ?? null,
-        },
-      });
+    const activeEnvironment: 'sandbox' | 'production' =
+      (dto.activeEnvironment || dto.environment) === 'production'
+        ? 'production'
+        : 'sandbox';
 
-      await this.prisma.qboRuntimeSettings.upsert({
-        where: { id: 1 },
-        create: { id: 1, activeEnvironment: activeModel },
-        update: { activeEnvironment: activeModel },
-      });
+    const env = dto.environment;
+    const prevEnvCred = prevCreds?.[env] || {};
+    const nextSecret =
+      dto.clientSecret?.trim()?.length
+        ? dto.clientSecret.trim()
+        : prevEnvCred?.clientSecret ?? null;
 
-      await this.prisma.auditLog.create({
-        data: {
-          userId: req.user?.id,
-          action: 'ADMIN_QBO_CONFIG_SAVE',
-          entity: 'QboClientCredential',
-          meta: {
-            environment: dto.environment,
-            activeEnvironment: activeEnv,
-            clientIdConfigured: Boolean(next.clientId),
-            clientSecretConfigured: Boolean(next.clientSecret),
-          },
-        },
-      });
+    const nextSnapshot = {
+      activeEnvironment,
+      credentials: {
+        sandbox:
+          env === 'sandbox'
+            ? { clientId: dto.clientId.trim(), clientSecret: nextSecret }
+            : prevCreds?.sandbox || { clientId: null, clientSecret: null },
+        production:
+          env === 'production'
+            ? { clientId: dto.clientId.trim(), clientSecret: nextSecret }
+            : prevCreds?.production || { clientId: null, clientSecret: null },
+      },
+    };
 
-      return { ok: true };
-    } catch (e: any) {
-      throw new BadRequestException(
-        e?.message || 'Failed to save QBO configuration',
-      );
-    }
+    await this.prisma.auditLog.create({
+      data: {
+        userId: req.user?.id,
+        action: 'ADMIN_QBO_CONFIG_SNAPSHOT',
+        entity: 'QboConfig',
+        meta: nextSnapshot,
+      },
+    });
+
+    return { ok: true };
   }
 }
