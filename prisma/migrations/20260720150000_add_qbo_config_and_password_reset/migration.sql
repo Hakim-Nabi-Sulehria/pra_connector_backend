@@ -17,12 +17,9 @@ CREATE TABLE IF NOT EXISTS "QboClientCredential" (
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" TIMESTAMP(3) NOT NULL,
 
-  CONSTRAINT "QboClientCredential_pkey" PRIMARY KEY ("id")
+  CONSTRAINT "QboClientCredential_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "QboClientCredential_environment_key" UNIQUE ("environment")
 );
-
--- CreateIndex / Unique constraint
-ALTER TABLE "QboClientCredential"
-  ADD CONSTRAINT "QboClientCredential_environment_key" UNIQUE ("environment");
 
 -- CreateTable
 CREATE TABLE IF NOT EXISTS "QboRuntimeSettings" (
