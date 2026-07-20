@@ -177,12 +177,20 @@ export class AdminController {
     @Query('pra') pra?: string,
     @Query('active') active?: string,
   ) {
-    const rows = await this.prisma.organization.findMany({
-      where: this.buildCompanyWhere({ q, environment, qbo, pra, active }),
-      include: this.companyInclude(),
-      orderBy: { createdAt: 'desc' },
-    });
-    return rows.map(sanitizeCompany);
+    try {
+      const rows = await this.prisma.organization.findMany({
+        where: this.buildCompanyWhere({ q, environment, qbo, pra, active }),
+        include: this.companyInclude(),
+        orderBy: { createdAt: 'desc' },
+      });
+      return rows.map(sanitizeCompany);
+    } catch (e: any) {
+      // Return a safe, non-sensitive error hint for admin UI debugging.
+      throw new BadRequestException({
+        message: 'Failed to load companies',
+        details: e?.message || String(e),
+      });
+    }
   }
 
   @Get('companies/:id')
