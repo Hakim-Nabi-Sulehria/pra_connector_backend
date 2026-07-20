@@ -390,18 +390,24 @@ export class QboService {
       push(String(fromInvoice.DefinitionId), String(fromInvoice.Name || fieldName));
     }
 
-    // Heuristic: enhanced IDs are often sequential (HS Code → 1000000001, Fiscal Invoice → 1000000002).
+    const assignedToOthers = new Set(
+      enhancedDefs
+        .filter((d) => d.name.toLowerCase() !== needle)
+        .map((d) => String(d.definitionId)),
+    );
     const knownEnhanced = enhancedDefs
       .map((d) => Number(d.definitionId))
       .filter((n) => Number.isFinite(n) && n >= 1_000_000_000);
     if (knownEnhanced.length) {
       const base = Math.min(...knownEnhanced);
       for (let offset = 0; offset <= 5; offset += 1) {
-        push(String(base + offset), fieldName);
+        const id = String(base + offset);
+        if (!assignedToOthers.has(id)) push(id, fieldName);
       }
     } else {
       for (let offset = 0; offset <= 5; offset += 1) {
-        push(String(1_000_000_001 + offset), fieldName);
+        const id = String(1_000_000_001 + offset);
+        if (!assignedToOthers.has(id)) push(id, fieldName);
       }
     }
 
