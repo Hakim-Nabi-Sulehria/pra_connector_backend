@@ -40,6 +40,16 @@ export class QboService {
       : 'https://sandbox-quickbooks.api.intuit.com';
   }
 
+  private graphqlUrl() {
+    return process.env.QBO_ENVIRONMENT === 'production'
+      ? 'https://qb.api.intuit.com/graphql'
+      : 'https://public.api.intuit.com/2020-04/graphql';
+  }
+
+  private invoiceWriteUrl(realmId: string) {
+    return `${this.baseUrl()}/v3/company/${realmId}/invoice?minorversion=75&include=enhancedAllCustomFields`;
+  }
+
   getAuthUri(organizationId: string, userId: string, returnOrigin?: string) {
     const oauth = this.createClient();
     const state = Buffer.from(
@@ -51,7 +61,10 @@ export class QboService {
       }),
     ).toString('base64url');
     return oauth.authorizeUri({
-      scope: [OAuthClient.scopes.Accounting],
+      scope: [
+        OAuthClient.scopes.Accounting,
+        'app-foundations.custom-field-definitions.read',
+      ],
       state,
     });
   }
@@ -245,6 +258,156 @@ export class QboService {
       .filter((d) => d.enabled && d.name);
   }
 
+  /**
+   * Enhanced custom fields (Settings → Lists → Custom fields) use legacyIDV2 as
+   * DefinitionId in REST. GraphQL requires app-foundations.custom-field-definitions.read.
+   */
+  async getEnhancedCustomFieldDefs(organizationId: string): Promise<
+    { definitionId: string; name: string; source: 'graphql' | 'invoice' }[]
+  > {
+    const byName = new Map<string, { definitionId: string; name: string; source: 'graphql' | 'invoice' }>();
+
+    try {
+      const { accessToken } = await this.ensureTokens(organizationId);
+      const query = `
+        query GetCustomFieldDefinitions {
+          appFoundationsCustomFieldDefinitions {
+            edges {
+              node {
+                legacyIDV2
+                label
+                active
+              }
+            }
+          }
+        }`;
+      const response = await axios.post(
+        this.graphqlUrl(),
+        { query },
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+        },
+      );
+      const edges =
+        response.data?.data?.appFoundationsCustomFieldDefinitions?.edges || [];
+      for (const edge of edges) {
+        const node = edge?.node;
+        if (!node?.legacyIDV2 || !node?.label || node.active === false) continue;
+        byName.set(String(node.label).toLowerCase(), {
+          definitionId: String(node.legacyIDV2),
+          name: String(node.label),
+          source: 'graphql',
+        });
+      }
+    } catch {
+      // GraphQL may be unavailable without the restricted scope or partner tier.
+    }
+
+    try {
+      const { realmId, accessToken } = await this.ensureTokens(organizationId);
+      const q = encodeURIComponent('select Id from Invoice maxresults 50');
+      const url = `${this.baseUrl()}/v3/company/${realmId}/query?query=${q}&minorversion=75`;
+      const response = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+      });
+      const ids = (response.data?.QueryResponse?.Invoice || []).map(
+        (inv: { Id: string }) => String(inv.Id),
+      );
+      for (const id of ids) {
+        try {
+          const invoice = await this.getInvoice(organizationId, id);
+          for (const cf of invoice?.CustomField || []) {
+            if (!cf?.DefinitionId || !cf?.Name) continue;
+            const key = String(cf.Name).toLowerCase();
+            if (!byName.has(key)) {
+              byName.set(key, {
+                definitionId: String(cf.DefinitionId),
+                name: String(cf.Name),
+                source: 'invoice',
+              });
+            }
+          }
+        } catch {
+          // skip invoice
+        }
+      }
+    } catch {
+      // ignore scan failures
+    }
+
+    return Array.from(byName.values());
+  }
+
+  private readCustomFieldStringValue(cf: any): string | null {
+    if (!cf) return null;
+    if (cf.StringValue != null && String(cf.StringValue).length > 0) {
+      return String(cf.StringValue);
+    }
+    if (cf.NumberValue != null) return String(cf.NumberValue);
+    if (cf.DateValue != null) return String(cf.DateValue);
+    if (cf.BooleanValue != null) return String(cf.BooleanValue);
+    return null;
+  }
+
+  private findCustomFieldByName(customFields: any[], fieldName: string) {
+    const needle = fieldName.toLowerCase();
+    return (customFields || []).find(
+      (cf) => String(cf?.Name || '').toLowerCase() === needle,
+    );
+  }
+
+  private buildDefinitionIdCandidates(
+    fieldName: string,
+    defs: { definitionId: string; name: string }[],
+    enhancedDefs: { definitionId: string; name: string }[],
+    existing: any[],
+  ): { definitionId: string; name: string }[] {
+    const needle = fieldName.toLowerCase();
+    const seen = new Set<string>();
+    const out: { definitionId: string; name: string }[] = [];
+    const push = (definitionId: string, name: string) => {
+      const id = String(definitionId);
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push({ definitionId: id, name });
+    };
+
+    for (const def of enhancedDefs) {
+      if (def.name.toLowerCase() === needle) push(def.definitionId, def.name);
+    }
+    for (const def of defs) {
+      if (def.name.toLowerCase() === needle) push(def.definitionId, def.name);
+    }
+    const fromInvoice = this.findCustomFieldByName(existing, fieldName);
+    if (fromInvoice?.DefinitionId != null) {
+      push(String(fromInvoice.DefinitionId), String(fromInvoice.Name || fieldName));
+    }
+
+    // Heuristic: enhanced IDs are often sequential (HS Code → 1000000001, Fiscal Invoice → 1000000002).
+    const knownEnhanced = enhancedDefs
+      .map((d) => Number(d.definitionId))
+      .filter((n) => Number.isFinite(n) && n >= 1_000_000_000);
+    if (knownEnhanced.length) {
+      const base = Math.min(...knownEnhanced);
+      for (let offset = 0; offset <= 5; offset += 1) {
+        push(String(base + offset), fieldName);
+      }
+    } else {
+      for (let offset = 0; offset <= 5; offset += 1) {
+        push(String(1_000_000_001 + offset), fieldName);
+      }
+    }
+
+    return out;
+  }
+
   /** Merge Preferences definitions into invoice.CustomField so empty fields still appear. */
   enrichInvoiceCustomFields(
     invoice: any,
@@ -340,64 +503,44 @@ export class QboService {
     stringValue: string,
   ) {
     const defs = await this.getSalesCustomFieldDefs(organizationId);
-    const invoice = await this.getInvoice(organizationId, invoiceId);
+    const enhancedDefs = await this.getEnhancedCustomFieldDefs(organizationId);
+    let invoice = await this.getInvoice(organizationId, invoiceId);
     if (!invoice?.Id || invoice.SyncToken == null) {
       throw new BadRequestException('Invoice not found in QuickBooks');
     }
 
     const existing = Array.isArray(invoice.CustomField) ? invoice.CustomField : [];
-    const fromInvoice = existing.find(
-      (cf: any) =>
-        String(cf?.Name || '').toLowerCase() === fieldName.toLowerCase(),
+    const candidates = this.buildDefinitionIdCandidates(
+      fieldName,
+      defs,
+      enhancedDefs,
+      existing,
     );
-    const fromPrefs = defs.find(
-      (d) => d.name.toLowerCase() === fieldName.toLowerCase(),
-    );
-
-    // Prefer Preference DefinitionId, then invoice CustomField, then legacy slots 1..3.
-    const candidates: { definitionId: string; name: string }[] = [];
-    if (fromPrefs) {
-      candidates.push({ definitionId: fromPrefs.definitionId, name: fromPrefs.name });
-    }
-    if (fromInvoice?.DefinitionId != null) {
-      candidates.push({
-        definitionId: String(fromInvoice.DefinitionId),
-        name: String(fromInvoice.Name || fieldName),
-      });
-    }
-    // Last resort: try classic legacy DefinitionIds (SalesCustom 1/2/3)
-    for (const id of ['1', '2', '3']) {
-      if (!candidates.some((c) => c.definitionId === id)) {
-        candidates.push({ definitionId: id, name: fieldName });
-      }
-    }
 
     const { realmId, accessToken } = await this.ensureTokens(organizationId);
-    const url = `${this.baseUrl()}/v3/company/${realmId}/invoice?minorversion=75`;
-    const attempts: { definitionId: string; ok: boolean; error?: string; invoice?: any }[] = [];
+    const url = this.invoiceWriteUrl(realmId);
+    const attempts: {
+      definitionId: string;
+      ok: boolean;
+      verified?: boolean;
+      error?: string;
+      invoice?: any;
+    }[] = [];
 
     for (const candidate of candidates) {
       try {
+        invoice = await this.getInvoice(organizationId, invoiceId);
         const payload = {
           Id: String(invoice.Id),
-          SyncToken: String(
-            attempts.find((a) => a.ok && a.invoice?.SyncToken)?.invoice?.SyncToken ??
-              invoice.SyncToken,
-          ),
+          SyncToken: String(invoice.SyncToken),
           sparse: true,
           CustomField: [
             {
               DefinitionId: candidate.definitionId,
-              Name: candidate.name,
-              Type: 'StringType',
               StringValue: stringValue,
             },
           ],
         };
-        // Always re-read SyncToken before each attempt after a success path change
-        const latest = await this.getInvoice(organizationId, invoiceId);
-        payload.SyncToken = String(latest.SyncToken);
-        payload.Id = String(latest.Id);
 
         const response = await axios.post(url, payload, {
           headers: {
@@ -407,20 +550,37 @@ export class QboService {
           },
         });
         const updated = response.data?.Invoice || response.data;
+        const verifiedInvoice = await this.getInvoice(organizationId, invoiceId);
+        const verifiedField = this.findCustomFieldByName(
+          verifiedInvoice?.CustomField || [],
+          fieldName,
+        );
+        const verifiedValue = this.readCustomFieldStringValue(verifiedField);
+        const verified =
+          verifiedValue === stringValue ||
+          (verifiedField?.DefinitionId != null &&
+            String(verifiedField.DefinitionId) === candidate.definitionId &&
+            verifiedValue === stringValue);
+
         attempts.push({
           definitionId: candidate.definitionId,
           ok: true,
+          verified,
           invoice: updated,
         });
-        return {
-          ...this.enrichInvoiceCustomFields(updated, defs),
-          _writeMeta: {
-            fieldName,
-            stringValue,
-            definitionIdUsed: candidate.definitionId,
-            attempts,
-          },
-        };
+
+        if (verified) {
+          return {
+            ...this.enrichInvoiceCustomFields(verifiedInvoice, defs),
+            _writeMeta: {
+              fieldName,
+              stringValue,
+              definitionIdUsed: candidate.definitionId,
+              verified: true,
+              attempts,
+            },
+          };
+        }
       } catch (e: any) {
         const msg =
           e?.response?.data?.Fault?.Error?.[0]?.Message ||
@@ -436,8 +596,9 @@ export class QboService {
     }
 
     throw new BadRequestException({
-      message: `Could not update QBO custom field "${fieldName}". REST API may not support this field (new Custom Fields vs legacy sales-form fields).`,
+      message: `Could not update QBO custom field "${fieldName}". Tried enhanced DefinitionIds with include=enhancedAllCustomFields but value did not persist in QBO.`,
       availablePrefs: defs,
+      availableEnhanced: enhancedDefs,
       invoiceCustomFields: existing,
       attempts,
     });

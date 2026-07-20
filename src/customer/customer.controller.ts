@@ -242,8 +242,18 @@ export class CustomerController {
 
   @Get('qbo/custom-fields')
   async qboCustomFields(@Req() req: any) {
-    const defs = await this.qbo.getSalesCustomFieldDefs(this.orgId(req));
-    return { ok: true, count: defs.length, fields: defs };
+    const organizationId = this.orgId(req);
+    const [legacy, enhanced] = await Promise.all([
+      this.qbo.getSalesCustomFieldDefs(organizationId),
+      this.qbo.getEnhancedCustomFieldDefs(organizationId),
+    ]);
+    return {
+      ok: true,
+      legacyCount: legacy.length,
+      legacyFields: legacy,
+      enhancedCount: enhanced.length,
+      enhancedFields: enhanced,
+    };
   }
 
   @Post('qbo/invoices/:id/custom-field')
@@ -397,6 +407,7 @@ export class CustomerController {
 
     let qboWrite: any = null;
     let qboWriteError: string | null = null;
+    let qboWriteVerified = false;
     if (writeToQbo) {
       try {
         qboWrite = await this.qbo.updateInvoiceCustomField(
@@ -405,9 +416,16 @@ export class CustomerController {
           fieldName,
           fiscalInvoiceNo,
         );
+        qboWriteVerified = Boolean(qboWrite?._writeMeta?.verified);
         qboInvoice = qboWrite;
+        if (!qboWriteVerified) {
+          qboWriteError = 'QBO accepted the update but the value did not persist';
+        }
       } catch (e: any) {
-        qboWriteError = e?.message || 'Failed to write custom field to QBO';
+        qboWriteError =
+          e?.response?.message ||
+          e?.message ||
+          'Failed to write custom field to QBO';
       }
     }
 
@@ -426,7 +444,8 @@ export class CustomerController {
         Response: 'Test fiscal invoice number attached successfully.',
         Test: true,
         qboCustomFieldName: fieldName,
-        qboWriteOk: Boolean(qboWrite) && !qboWriteError,
+        qboWriteOk: qboWriteVerified,
+        qboWriteVerified,
         qboWriteError,
       },
     };
@@ -457,7 +476,8 @@ export class CustomerController {
           usin: row.usin,
           fiscalInvoiceNo,
           qboCustomFieldName: fieldName,
-          qboWriteOk: Boolean(qboWrite) && !qboWriteError,
+          qboWriteOk: qboWriteVerified,
+          qboWriteVerified,
           qboWriteError,
         },
       },
@@ -465,7 +485,8 @@ export class CustomerController {
 
     return {
       ...row,
-      qboWriteOk: Boolean(qboWrite) && !qboWriteError,
+      qboWriteOk: qboWriteVerified,
+      qboWriteVerified,
       qboWriteError,
       qboCustomFields: qboInvoice?.CustomField || null,
     };
