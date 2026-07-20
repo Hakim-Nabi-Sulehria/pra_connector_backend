@@ -11,10 +11,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { ConnectionStatus, Prisma, Role } from '@prisma/client';
+import { ConnectionStatus, Prisma, QboEnvironment, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/guards';
-import { CreateCompanyDto, UpdateCompanyDto } from './admin.dto';
+import { CreateCompanyDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
 
 function defaultPraUrl(environment: string) {
   return environment === 'production'
@@ -431,5 +431,95 @@ export class AdminController {
       orderBy: { createdAt: 'desc' },
       include: { organization: { select: { name: true } } },
     });
+  }
+
+  private qboEnvToModel(env: string): QboEnvironment {
+    return env === 'production' ? QboEnvironment.PRODUCTION : QboEnvironment.SANDBOX;
+  }
+
+  private qboEnvToApi(env: QboEnvironment): 'sandbox' | 'production' {
+    return env === QboEnvironment.PRODUCTION ? 'production' : 'sandbox';
+  }
+
+  @Get('qbo/config')
+  async getQboConfig() {
+    const runtime = await this.prisma.qboRuntimeSettings.upsert({
+      where: { id: 1 },
+      create: { id: 1, activeEnvironment: QboEnvironment.SANDBOX },
+      update: {},
+    });
+
+    const sandbox = await this.prisma.qboClientCredential.findUnique({
+      where: { environment: QboEnvironment.SANDBOX },
+    });
+    const production = await this.prisma.qboClientCredential.findUnique({
+      where: { environment: QboEnvironment.PRODUCTION },
+    });
+
+    const toResp = (c: any) => {
+      const hasClientSecret = Boolean(c?.clientSecret);
+      return {
+        clientId: c?.clientId ?? null,
+        clientSecretMasked: hasClientSecret ? '********' : null,
+        hasClientSecret,
+      };
+    };
+
+    return {
+      activeEnvironment: this.qboEnvToApi(runtime.activeEnvironment),
+      credentials: {
+        sandbox: toResp(sandbox),
+        production: toResp(production),
+      },
+    };
+  }
+
+  @Patch('qbo/config')
+  async patchQboConfig(@Body() dto: UpdateQboConfigDto, @Req() req: any) {
+    const activeEnv = dto.activeEnvironment || dto.environment;
+    const envModel = this.qboEnvToModel(dto.environment);
+    const activeModel = this.qboEnvToModel(activeEnv);
+
+    const existing = await this.prisma.qboClientCredential.findUnique({
+      where: { environment: envModel },
+    });
+
+    const next = await this.prisma.qboClientCredential.upsert({
+      where: { environment: envModel },
+      create: {
+        environment: envModel,
+        clientId: dto.clientId.trim(),
+        clientSecret: dto.clientSecret?.trim() ? dto.clientSecret.trim() : null,
+      },
+      update: {
+        clientId: dto.clientId.trim(),
+        clientSecret:
+          dto.clientSecret?.trim()
+            ? dto.clientSecret.trim()
+            : existing?.clientSecret ?? null,
+      },
+    });
+
+    await this.prisma.qboRuntimeSettings.upsert({
+      where: { id: 1 },
+      create: { id: 1, activeEnvironment: activeModel },
+      update: { activeEnvironment: activeModel },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        userId: req.user?.id,
+        action: 'ADMIN_QBO_CONFIG_SAVE',
+        entity: 'QboClientCredential',
+        meta: {
+          environment: dto.environment,
+          activeEnvironment: activeEnv,
+          clientIdConfigured: Boolean(next.clientId),
+          clientSecretConfigured: Boolean(next.clientSecret),
+        },
+      },
+    });
+
+    return { ok: true };
   }
 }

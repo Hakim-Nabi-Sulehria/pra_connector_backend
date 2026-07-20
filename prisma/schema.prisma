@@ -22,6 +22,11 @@ enum ConnectionStatus {
   PENDING
 }
 
+enum QboEnvironment {
+  SANDBOX
+  PRODUCTION
+}
+
 enum InvoiceSyncStatus {
   PENDING
   VALIDATED
@@ -94,6 +99,7 @@ model QboConnection {
   organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   realmId         String?
   companyName     String?
+  environment     QboEnvironment?
   accessToken     String?
   refreshToken    String?
   tokenExpiresAt  DateTime?
@@ -101,6 +107,21 @@ model QboConnection {
   lastSyncedAt    DateTime?
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
+}
+
+model QboClientCredential {
+  id            String         @id @default(cuid())
+  environment   QboEnvironment @unique
+  clientId      String?
+  clientSecret  String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+}
+
+model QboRuntimeSettings {
+  id               Int            @id @default(1)
+  activeEnvironment QboEnvironment @default(SANDBOX)
+  updatedAt       DateTime       @updatedAt
 }
 
 model PraConnection {
@@ -168,4 +189,18 @@ model AuditLog {
 
   @@index([organizationId])
   @@index([createdAt])
+}
+
+model PasswordResetOtp {
+  id         String   @id @default(cuid())
+  email      String
+  otpHash    String
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  usedAt     DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([email])
+  @@index([expiresAt])
 }

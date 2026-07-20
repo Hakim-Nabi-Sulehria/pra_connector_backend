@@ -5,9 +5,16 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomInt } from 'crypto';
 import { Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { LoginDto, RegisterCustomerDto } from './dto';
+import {
+  LoginDto,
+  RegisterCustomerDto,
+  ResetPasswordDto,
+  RequestPasswordResetDto,
+  VerifyPasswordResetOtpDto,
+} from './dto';
 
 @Injectable()
 export class AuthService {
@@ -15,6 +22,15 @@ export class AuthService {
     private prisma: PrismaService,
     private jwt: JwtService,
   ) {}
+
+  private otpHash(otp: string) {
+    // Hash so OTP isn't stored in plain text.
+    return createHash('sha256').update(otp).digest('hex');
+  }
+
+  private nowPlusMinutes(minutes: number) {
+    return new Date(Date.now() + minutes * 60 * 1000);
+  }
 
   private async sign(user: {
     id: string;
@@ -48,6 +64,11 @@ export class AuthService {
   }
 
   async login(dto: LoginDto, expectedPortal?: 'admin' | 'customer') {
+    if (expectedPortal === 'customer') {
+      if (!dto.captcha || dto.captcha.trim().length < 1) {
+        throw new BadRequestException('Captcha is required');
+      }
+    }
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email.toLowerCase() },
       include: { organization: true },
@@ -85,6 +106,103 @@ export class AuthService {
 
     const accessToken = await this.sign(user);
     return { accessToken, user: this.sanitize(user) };
+  }
+
+  async requestPasswordReset(dto: RequestPasswordResetDto) {
+    if (!dto.captcha || dto.captcha.trim().length < 1) {
+      throw new BadRequestException('Captcha is required');
+    }
+
+    const email = dto.email.toLowerCase();
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    // Requirement: allow login only for existing emails.
+    if (!user || !user.isActive || user.role === Role.SUPER_ADMIN) {
+      throw new UnauthorizedException('Invalid email or reset request');
+    }
+
+    const otp = String(randomInt(100000, 1000000));
+    const expiresAt = this.nowPlusMinutes(10);
+
+    await this.prisma.passwordResetOtp.create({
+      data: {
+        email,
+        otpHash: this.otpHash(otp),
+        expiresAt,
+        verifiedAt: null,
+        usedAt: null,
+      },
+    });
+
+    // NOTE: No email transport is configured in this repo.
+    // Return OTP so the UI flow can be tested end-to-end.
+    return { ok: true, message: 'OTP sent', otp };
+  }
+
+  async verifyPasswordResetOtp(dto: VerifyPasswordResetOtpDto) {
+    const email = dto.email.toLowerCase();
+    const otpHash = this.otpHash(dto.otp.trim());
+
+    const token = await this.prisma.passwordResetOtp.findFirst({
+      where: {
+        email,
+        expiresAt: { gt: new Date() },
+        usedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!token || token.otpHash !== otpHash) {
+      throw new UnauthorizedException('Invalid or expired OTP');
+    }
+
+    await this.prisma.passwordResetOtp.update({
+      where: { id: token.id },
+      data: { verifiedAt: new Date() },
+    });
+
+    return { ok: true };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const email = dto.email.toLowerCase();
+    const otpHash = this.otpHash(dto.otp.trim());
+
+    const token = await this.prisma.passwordResetOtp.findFirst({
+      where: {
+        email,
+        otpHash,
+        expiresAt: { gt: new Date() },
+        usedAt: null,
+        verifiedAt: { not: null },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!token) {
+      throw new UnauthorizedException('OTP not verified or expired');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { email } });
+    if (!user || !user.isActive || user.role === Role.SUPER_ADMIN) {
+      throw new UnauthorizedException('Invalid reset request');
+    }
+
+    const passwordHash = await bcrypt.hash(dto.newPassword, 10);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { passwordHash },
+      });
+      await tx.passwordResetOtp.update({
+        where: { id: token.id },
+        data: { usedAt: new Date() },
+      });
+    });
+
+    return { ok: true, message: 'Password updated successfully' };
   }
 
   async registerCustomer(dto: RegisterCustomerDto) {

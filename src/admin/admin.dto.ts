@@ -50,3 +50,23 @@ export class UpdateCompanyDto {
   @IsIn(['sandbox', 'production'])
   environment?: string;
 }
+
+export class UpdateQboConfigDto {
+  @IsIn(['sandbox', 'production'])
+  environment!: string;
+
+  @IsOptional()
+  @IsIn(['sandbox', 'production'])
+  activeEnvironment?: string;
+
+  @IsString()
+  clientId!: string;
+
+  /**
+   * If blank/omitted, backend keeps the existing secret for this environment.
+   * Note: this project stores secrets in DB (demo mode). Production should encrypt.
+   */
+  @IsOptional()
+  @IsString()
+  clientSecret?: string;
+}

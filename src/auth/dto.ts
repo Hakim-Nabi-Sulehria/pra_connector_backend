@@ -8,6 +8,12 @@ export class LoginDto {
   @IsString()
   @MinLength(6)
   password!: string;
+
+  // Captcha is enforced for customer portal login.
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  captcha?: string;
 }
 
 export class RegisterCustomerDto {
@@ -43,4 +49,35 @@ export class CreateOrgUserDto {
   @IsOptional()
   @IsEnum(Role)
   role?: Role;
+}
+
+export class RequestPasswordResetDto {
+  @IsEmail()
+  email!: string;
+
+  @IsString()
+  @MinLength(1)
+  captcha!: string;
+}
+
+export class VerifyPasswordResetOtpDto {
+  @IsEmail()
+  email!: string;
+
+  @IsString()
+  @MinLength(4)
+  otp!: string;
+}
+
+export class ResetPasswordDto {
+  @IsEmail()
+  email!: string;
+
+  @IsString()
+  @MinLength(4)
+  otp!: string;
+
+  @IsString()
+  @MinLength(6)
+  newPassword!: string;
 }
