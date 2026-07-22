@@ -10,36 +10,36 @@ export type DefaultMapping = {
 
 /** Complete PRA invoice fields with sensible QBO defaults */
 export const DEFAULT_MAPPINGS: DefaultMapping[] = [
-  // HEADER
+  // HEADER — matches PRA PostData payload key order
   { section: 'HEADER', targetField: 'InvoiceNumber', sourceField: '', isRequired: false, sortOrder: 0 },
   { section: 'HEADER', targetField: 'POSID', sourceField: 'pra.posId', isRequired: true, sortOrder: 1 },
   { section: 'HEADER', targetField: 'USIN', sourceField: 'DocNumber', isRequired: true, sortOrder: 2 },
   { section: 'HEADER', targetField: 'DateTime', sourceField: 'TxnDate', isRequired: true, sortOrder: 3 },
-  { section: 'HEADER', targetField: 'BuyerName', sourceField: 'CustomerRef.name', isRequired: false, sortOrder: 4 },
-  { section: 'HEADER', targetField: 'BuyerPNTN', sourceField: 'Customer.PrimaryTaxIdentifier', isRequired: false, sortOrder: 5 },
-  { section: 'HEADER', targetField: 'BuyerCNIC', sourceField: '', isRequired: false, sortOrder: 6 },
+  { section: 'HEADER', targetField: 'BuyerPNTN', sourceField: 'Customer.PrimaryTaxIdentifier', isRequired: false, sortOrder: 4 },
+  { section: 'HEADER', targetField: 'BuyerCNIC', sourceField: '', isRequired: false, sortOrder: 5 },
+  { section: 'HEADER', targetField: 'BuyerName', sourceField: 'CustomerRef.name', isRequired: false, sortOrder: 6 },
   { section: 'HEADER', targetField: 'BuyerPhoneNumber', sourceField: 'BillAddr.Line1', isRequired: false, sortOrder: 7 },
-  { section: 'HEADER', targetField: 'TotalSaleValue', sourceField: 'TxnTaxDetail.TaxLine.0.TaxLineDetail.NetAmountTaxable', isRequired: true, sortOrder: 8 },
-  { section: 'HEADER', targetField: 'TotalTaxCharged', sourceField: 'TxnTaxDetail.TotalTax', isRequired: true, sortOrder: 9 },
-  { section: 'HEADER', targetField: 'Discount', sourceField: '', isRequired: false, sortOrder: 10 },
-  { section: 'HEADER', targetField: 'FurtherTax', sourceField: '', isRequired: false, sortOrder: 11 },
-  { section: 'HEADER', targetField: 'TotalBillAmount', sourceField: 'TotalAmt', isRequired: true, sortOrder: 12 },
-  { section: 'HEADER', targetField: 'TotalQuantity', sourceField: 'derived.TotalQuantity', isRequired: false, sortOrder: 13 },
+  { section: 'HEADER', targetField: 'TotalBillAmount', sourceField: 'TotalAmt', isRequired: true, sortOrder: 8 },
+  { section: 'HEADER', targetField: 'TotalQuantity', sourceField: 'derived.TotalQuantity', isRequired: false, sortOrder: 9 },
+  { section: 'HEADER', targetField: 'TotalSaleValue', sourceField: 'TxnTaxDetail.TaxLine.0.TaxLineDetail.NetAmountTaxable', isRequired: true, sortOrder: 10 },
+  { section: 'HEADER', targetField: 'TotalTaxCharged', sourceField: 'TxnTaxDetail.TotalTax', isRequired: true, sortOrder: 11 },
+  { section: 'HEADER', targetField: 'Discount', sourceField: '', isRequired: false, sortOrder: 12 },
+  { section: 'HEADER', targetField: 'FurtherTax', sourceField: '', isRequired: false, sortOrder: 13 },
   { section: 'HEADER', targetField: 'PaymentMode', sourceField: 'derived.PaymentMode', isRequired: true, sortOrder: 14 },
   { section: 'HEADER', targetField: 'RefUSIN', sourceField: '', isRequired: false, sortOrder: 15 },
   { section: 'HEADER', targetField: 'InvoiceType', sourceField: 'derived.InvoiceType', isRequired: true, sortOrder: 16 },
 
-  // LINE
+  // LINE — matches PRA Items[] key order
   { section: 'LINE', targetField: 'ItemCode', sourceField: 'Line.SalesItemLineDetail.ItemRef.value', isRequired: true, sortOrder: 0 },
   { section: 'LINE', targetField: 'ItemName', sourceField: 'Line.SalesItemLineDetail.ItemRef.name', isRequired: true, sortOrder: 1 },
-  { section: 'LINE', targetField: 'PCTCode', sourceField: 'custom.PCTCode', isRequired: true, sortOrder: 2 },
-  { section: 'LINE', targetField: 'Quantity', sourceField: 'Line.SalesItemLineDetail.Qty', isRequired: true, sortOrder: 3 },
+  { section: 'LINE', targetField: 'Quantity', sourceField: 'Line.SalesItemLineDetail.Qty', isRequired: true, sortOrder: 2 },
+  { section: 'LINE', targetField: 'PCTCode', sourceField: 'custom.PCTCode', isRequired: true, sortOrder: 3 },
   { section: 'LINE', targetField: 'TaxRate', sourceField: 'TxnTaxDetail.TaxLine.0.TaxLineDetail.TaxPercent', isRequired: true, sortOrder: 4 },
   { section: 'LINE', targetField: 'SaleValue', sourceField: 'Line.Amount', isRequired: true, sortOrder: 5 },
-  { section: 'LINE', targetField: 'Discount', sourceField: '', isRequired: false, sortOrder: 6 },
-  { section: 'LINE', targetField: 'FurtherTax', sourceField: '', isRequired: false, sortOrder: 7 },
-  { section: 'LINE', targetField: 'TaxCharged', sourceField: 'derived.LineTaxCharged', isRequired: true, sortOrder: 8 },
-  { section: 'LINE', targetField: 'TotalAmount', sourceField: 'derived.LineTotalAmount', isRequired: true, sortOrder: 9 },
+  { section: 'LINE', targetField: 'TotalAmount', sourceField: 'derived.LineTotalAmount', isRequired: true, sortOrder: 6 },
+  { section: 'LINE', targetField: 'TaxCharged', sourceField: 'derived.LineTaxCharged', isRequired: true, sortOrder: 7 },
+  { section: 'LINE', targetField: 'Discount', sourceField: '', isRequired: false, sortOrder: 8 },
+  { section: 'LINE', targetField: 'FurtherTax', sourceField: '', isRequired: false, sortOrder: 9 },
   { section: 'LINE', targetField: 'InvoiceType', sourceField: 'derived.InvoiceType', isRequired: true, sortOrder: 10 },
   { section: 'LINE', targetField: 'RefUSIN', sourceField: '', isRequired: false, sortOrder: 11 },
 ];
