@@ -1,13 +1,24 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const OAuthClient = require('intuit-oauth');
 import axios from 'axios';
 import { ConnectionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  decodeQboOAuthState,
+  encodeQboOAuthState,
+} from './oauth-state';
 
 @Injectable()
 export class QboService {
   constructor(private prisma: PrismaService) {}
+
+  /** In-flight refresh promises keyed by organizationId (prevents token thrash). */
+  private refreshLocks = new Map<string, Promise<{ realmId: string; accessToken: string }>>();
 
   private env(key: string) {
     return (process.env[key] || '').trim().replace(/^["']|["']$/g, '');
@@ -51,15 +62,16 @@ export class QboService {
   }
 
   getAuthUri(organizationId: string, userId: string, returnOrigin?: string) {
+    if (!organizationId || !userId) {
+      throw new BadRequestException('Organization and user are required for QBO connect');
+    }
     const oauth = this.createClient();
-    const state = Buffer.from(
-      JSON.stringify({
-        organizationId,
-        userId,
-        returnOrigin: returnOrigin || null,
-        t: Date.now(),
-      }),
-    ).toString('base64url');
+    const state = encodeQboOAuthState({
+      organizationId,
+      userId,
+      returnOrigin: returnOrigin || null,
+      t: Date.now(),
+    });
     return oauth.authorizeUri({
       scope: [
         OAuthClient.scopes.Accounting,
@@ -75,16 +87,37 @@ export class QboService {
     const token = authResponse.getToken();
     const realmId = query.realmId || token.realmId;
     if (!query.state) throw new BadRequestException('Missing OAuth state');
+    if (!realmId) throw new BadRequestException('Missing QuickBooks realmId');
 
-    let state: {
-      organizationId: string;
-      userId: string;
-      returnOrigin?: string | null;
-    };
-    try {
-      state = JSON.parse(Buffer.from(query.state, 'base64url').toString('utf8'));
-    } catch {
-      throw new BadRequestException('Invalid OAuth state');
+    const state = decodeQboOAuthState(query.state);
+    if (!state.organizationId || !state.userId) {
+      throw new BadRequestException('OAuth state is missing tenant identity');
+    }
+
+    // Bind tokens only to the org that started connect — never trust client-supplied org alone.
+    const user = await this.prisma.user.findUnique({
+      where: { id: state.userId },
+      select: {
+        id: true,
+        isActive: true,
+        organizationId: true,
+        role: true,
+      },
+    });
+    if (!user || !user.isActive) {
+      throw new ForbiddenException('Connecting user is invalid or inactive');
+    }
+    if (user.organizationId !== state.organizationId) {
+      throw new ForbiddenException(
+        'OAuth state does not match the connecting user organization',
+      );
+    }
+    const org = await this.prisma.organization.findUnique({
+      where: { id: state.organizationId },
+      select: { id: true, isActive: true },
+    });
+    if (!org || !org.isActive) {
+      throw new ForbiddenException('Organization is invalid or inactive');
     }
 
     const expiresAt = token.expires_in
@@ -143,6 +176,21 @@ export class QboService {
   }
 
   private async ensureTokens(organizationId: string) {
+    if (!organizationId) {
+      throw new BadRequestException('organizationId is required');
+    }
+
+    const existing = this.refreshLocks.get(organizationId);
+    if (existing) return existing;
+
+    const run = this.ensureTokensUnlocked(organizationId).finally(() => {
+      this.refreshLocks.delete(organizationId);
+    });
+    this.refreshLocks.set(organizationId, run);
+    return run;
+  }
+
+  private async ensureTokensUnlocked(organizationId: string) {
     const conn = await this.prisma.qboConnection.findUnique({
       where: { organizationId },
     });

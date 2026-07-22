@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -126,7 +127,13 @@ export class CustomerController {
   ) {}
 
   private orgId(req: any) {
-    return req.user.organizationId as string;
+    const organizationId = req.user?.organizationId as string | null | undefined;
+    if (!organizationId) {
+      throw new ForbiddenException(
+        'Your account is not linked to a company workspace',
+      );
+    }
+    return organizationId;
   }
 
   @Get('dashboard')
