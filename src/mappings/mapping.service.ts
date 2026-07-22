@@ -19,10 +19,12 @@ export class MappingService {
     const existing = await this.prisma.fieldMapping.findMany({
       where: { organizationId },
     });
-    const have = new Set(existing.map((e) => `${e.section}:${e.targetField}`));
+    const byKey = new Map(
+      existing.map((e) => [`${e.section}:${e.targetField}`, e] as const),
+    );
 
     const missing = DEFAULT_MAPPINGS.filter(
-      (m) => !have.has(`${m.section}:${m.targetField}`),
+      (m) => !byKey.has(`${m.section}:${m.targetField}`),
     );
 
     if (missing.length) {
@@ -38,18 +40,22 @@ export class MappingService {
       });
     }
 
-    // Keep sortOrder/isRequired in sync for known defaults without overwriting sourceField
-    for (const m of DEFAULT_MAPPINGS) {
-      const row = existing.find(
-        (e) => e.section === m.section && e.targetField === m.targetField,
-      );
-      if (!row) continue;
-      if (row.sortOrder !== m.sortOrder || row.isRequired !== m.isRequired) {
-        await this.prisma.fieldMapping.update({
+    // Always re-sync sortOrder/isRequired to the canonical PRA payload sequence
+    const syncOps = DEFAULT_MAPPINGS.flatMap((m) => {
+      const row = byKey.get(`${m.section}:${m.targetField}`);
+      if (!row) return [];
+      if (row.sortOrder === m.sortOrder && row.isRequired === m.isRequired) {
+        return [];
+      }
+      return [
+        this.prisma.fieldMapping.update({
           where: { id: row.id },
           data: { sortOrder: m.sortOrder, isRequired: m.isRequired },
-        });
-      }
+        }),
+      ];
+    });
+    if (syncOps.length) {
+      await this.prisma.$transaction(syncOps);
     }
   }
 
@@ -128,13 +134,27 @@ export class MappingService {
       orderBy: [{ section: 'asc' }, { sortOrder: 'asc' }],
     });
 
+    const canonicalOrder = new Map(
+      DEFAULT_MAPPINGS.map((m) => [`${m.section}:${m.targetField}`, m.sortOrder]),
+    );
+    const sortedRows = [...rows].sort((a, b) => {
+      const sectionCmp = String(a.section).localeCompare(String(b.section));
+      if (sectionCmp !== 0) return sectionCmp;
+      const ao =
+        canonicalOrder.get(`${a.section}:${a.targetField}`) ?? a.sortOrder;
+      const bo =
+        canonicalOrder.get(`${b.section}:${b.targetField}`) ?? b.sortOrder;
+      return ao - bo;
+    });
+
     const enrich = (row: any) => ({
       id: row.id,
       section: row.section,
       praKey: row.targetField,
       qboKey: row.sourceField,
       isRequired: row.isRequired,
-      sortOrder: row.sortOrder,
+      sortOrder:
+        canonicalOrder.get(`${row.section}:${row.targetField}`) ?? row.sortOrder,
       value: sampleInvoice
         ? resolveSampleValue(sampleInvoice, row.sourceField, {
             posId: pra?.posId,
@@ -154,8 +174,8 @@ export class MappingService {
         Customer: i.CustomerRef?.name,
       })),
       availableQboKeys: collectQboKeys(sampleInvoice),
-      header: rows.filter((r) => r.section === 'HEADER').map(enrich),
-      lines: rows.filter((r) => r.section === 'LINE').map(enrich),
+      header: sortedRows.filter((r) => r.section === 'HEADER').map(enrich),
+      lines: sortedRows.filter((r) => r.section === 'LINE').map(enrich),
     };
   }
 
