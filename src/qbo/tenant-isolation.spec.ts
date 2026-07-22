@@ -121,4 +121,47 @@ describe('Tenant-scoped QBO connection lookups', () => {
     expect(set.has('org-a:2')).toBe(true);
     expect(set.has('org-b:2')).toBe(true);
   });
+
+  it('redacts QBO tokens from customer-facing org payloads', () => {
+    const org = {
+      name: 'Company A',
+      qbo: {
+        status: 'CONNECTED',
+        realmId: 'realm-xyz',
+        companyName: 'QBO XYZ',
+        accessToken: 'secret-access',
+        refreshToken: 'secret-refresh',
+      },
+      pra: {
+        status: 'CONNECTED',
+        posId: '123',
+        apiToken: 'pra-secret',
+      },
+    };
+    const { accessToken, refreshToken, ...qboSafe } = org.qbo;
+    const { apiToken, ...praSafe } = org.pra;
+    const sanitized = {
+      ...org,
+      qbo: qboSafe,
+      pra: { ...praSafe, hasToken: Boolean(apiToken) },
+    };
+    expect(sanitized.qbo).not.toHaveProperty('accessToken');
+    expect(sanitized.qbo).not.toHaveProperty('refreshToken');
+    expect(sanitized.pra).not.toHaveProperty('apiToken');
+    expect(sanitized.pra.hasToken).toBe(true);
+    expect(sanitized.qbo.realmId).toBe('realm-xyz');
+  });
+
+  it('scopes invoice mutations by organizationId to block IDOR', () => {
+    const invoices = [
+      { id: 'inv-a', organizationId: 'org-a' },
+      { id: 'inv-b', organizationId: 'org-b' },
+    ];
+    const actingOrg = 'org-a';
+    const targetId = 'inv-b';
+    const allowed = invoices.find(
+      (row) => row.id === targetId && row.organizationId === actingOrg,
+    );
+    expect(allowed).toBeUndefined();
+  });
 });

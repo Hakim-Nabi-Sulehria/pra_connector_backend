@@ -3,6 +3,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  NotFoundException,
   Param,
   Patch,
   Post,
@@ -136,6 +137,20 @@ export class CustomerController {
     return organizationId;
   }
 
+  private sanitizeOrgSecrets<T extends { qbo?: any; pra?: any }>(org: T | null) {
+    if (!org) return org;
+    const next: any = { ...org };
+    if (next.qbo) {
+      const { accessToken, refreshToken, ...qboSafe } = next.qbo;
+      next.qbo = qboSafe;
+    }
+    if (next.pra) {
+      const { apiToken, ...praSafe } = next.pra;
+      next.pra = { ...praSafe, hasToken: Boolean(apiToken), apiToken: undefined };
+    }
+    return next as T;
+  }
+
   @Get('dashboard')
   async dashboard(@Req() req: any) {
     const organizationId = this.orgId(req);
@@ -195,7 +210,7 @@ export class CustomerController {
     ];
 
     return {
-      org,
+      org: this.sanitizeOrgSecrets(org),
       kpis: { posted, failed, pending, total: org?._count.invoices || 0 },
       onboarding: {
         completed: steps.filter((s) => s.done).length,
@@ -215,20 +230,13 @@ export class CustomerController {
       select: { qbo: true, pra: true, name: true, pntn: true },
     });
     if (!org) return org;
-    const { apiToken, ...praSafe } = org.pra || ({} as any);
+    const safe = this.sanitizeOrgSecrets(org);
     return {
-      ...org,
+      ...safe,
       qboEnvironment: process.env.QBO_ENVIRONMENT || 'sandbox',
       qboRedirectUri:
         process.env.QBO_REDIRECT_URI ||
         'https://pra-connector-backend.onrender.com/api/qbo/callback',
-      pra: org.pra
-        ? {
-            ...praSafe,
-            hasToken: Boolean(apiToken),
-            apiToken: undefined,
-          }
-        : null,
     };
   }
 
@@ -518,8 +526,14 @@ export class CustomerController {
   @Patch('invoices/:id/simulate-post')
   async simulatePost(@Req() req: any, @Param('id') id: string) {
     const organizationId = this.orgId(req);
+    const existing = await this.prisma.invoiceSync.findFirst({
+      where: { id, organizationId },
+    });
+    if (!existing) {
+      throw new NotFoundException('Invoice not found for this company');
+    }
     const updated = await this.prisma.invoiceSync.update({
-      where: { id },
+      where: { id: existing.id },
       data: {
         status: 'POSTED',
         fiscalInvoiceNo: `9${Date.now().toString().slice(-17)}`,
@@ -536,7 +550,7 @@ export class CustomerController {
         userId: req.user.id,
         action: 'INVOICE_SIMULATE_POST',
         entity: 'InvoiceSync',
-        meta: { id },
+        meta: { id: existing.id },
       },
     });
     return updated;
