@@ -56,7 +56,6 @@ async function main() {
     },
     update: {
       passwordHash: demoHash,
-      organizationId: praOrg.id,
       role: Role.CUSTOMER_ADMIN,
       isActive: true,
     },
