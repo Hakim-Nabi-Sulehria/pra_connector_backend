@@ -86,10 +86,17 @@ export class AuthService {
     }
     const mode = parseIntegrationMode(dto.integrationMode);
     const email = dto.email.toLowerCase();
-    const user = await this.prisma.user.findUnique({
-      where: { email_integrationMode: { email, integrationMode: mode } },
-      include: this.userInclude(),
-    });
+    let user;
+    try {
+      user = await this.prisma.user.findUnique({
+        where: { email_integrationMode: { email, integrationMode: mode } },
+        include: this.userInclude(),
+      });
+    } catch (err: any) {
+      throw new BadRequestException(
+        `Login failed because the ${mode} database schema is not ready. Wait for the backend to finish migrating, then try again. (${err?.code || err?.message || 'db error'})`,
+      );
+    }
     if (!user || !user.isActive) {
       throw new UnauthorizedException('Invalid email or password');
     }

@@ -1,4 +1,5 @@
--- Idempotent FBR schema migration
+-- Idempotent FBR schema (safe on every boot). Production was serving
+-- new login code before this migration applied, which caused HTTP 500.
 
 DO $$ BEGIN
   CREATE TYPE "IntegrationMode" AS ENUM ('PRA', 'FBR');
@@ -7,13 +8,16 @@ EXCEPTION
 END $$;
 
 ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "integrationMode" "IntegrationMode" NOT NULL DEFAULT 'PRA';
+ALTER TABLE "Organization" ADD COLUMN IF NOT EXISTS "integrationMode" "IntegrationMode" NOT NULL DEFAULT 'PRA';
+ALTER TABLE "AuditLog" ADD COLUMN IF NOT EXISTS "integrationMode" "IntegrationMode" NOT NULL DEFAULT 'PRA';
+
 ALTER TABLE "User" DROP CONSTRAINT IF EXISTS "User_email_key";
 DROP INDEX IF EXISTS "User_email_key";
+
 CREATE UNIQUE INDEX IF NOT EXISTS "User_email_integrationMode_key" ON "User"("email", "integrationMode");
 CREATE INDEX IF NOT EXISTS "User_integrationMode_idx" ON "User"("integrationMode");
-
-ALTER TABLE "Organization" ADD COLUMN IF NOT EXISTS "integrationMode" "IntegrationMode" NOT NULL DEFAULT 'PRA';
 CREATE INDEX IF NOT EXISTS "Organization_integrationMode_idx" ON "Organization"("integrationMode");
+CREATE INDEX IF NOT EXISTS "AuditLog_integrationMode_idx" ON "AuditLog"("integrationMode");
 
 CREATE TABLE IF NOT EXISTS "FbrConnection" (
     "id" TEXT NOT NULL,
@@ -53,9 +57,6 @@ CREATE TABLE IF NOT EXISTS "FbrInvoiceSync" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
     CONSTRAINT "FbrInvoiceSync_pkey" PRIMARY KEY ("id")
 );
-
-ALTER TABLE "AuditLog" ADD COLUMN IF NOT EXISTS "integrationMode" "IntegrationMode" NOT NULL DEFAULT 'PRA';
-CREATE INDEX IF NOT EXISTS "AuditLog_integrationMode_idx" ON "AuditLog"("integrationMode");
 
 CREATE UNIQUE INDEX IF NOT EXISTS "FbrConnection_organizationId_key" ON "FbrConnection"("organizationId");
 CREATE UNIQUE INDEX IF NOT EXISTS "FbrInvoiceSync_organizationId_qboInvoiceId_key" ON "FbrInvoiceSync"("organizationId", "qboInvoiceId");
