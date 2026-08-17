@@ -7,7 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Connection URL is read from DATABASE_URL in .env
+enum IntegrationMode {
+  PRA
+  FBR
+}
 
 enum Role {
   SUPER_ADMIN
@@ -36,40 +39,48 @@ enum MappingSection {
 }
 
 model User {
-  id             String        @id @default(cuid())
-  email          String        @unique
-  passwordHash   String
-  fullName       String
-  role           Role          @default(CUSTOMER_ADMIN)
-  isActive       Boolean       @default(true)
-  organizationId String?
-  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  lastLoginAt    DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  auditLogs      AuditLog[]
+  id              String          @id @default(cuid())
+  email           String
+  passwordHash    String
+  fullName        String
+  role            Role            @default(CUSTOMER_ADMIN)
+  integrationMode IntegrationMode @default(PRA)
+  isActive        Boolean         @default(true)
+  organizationId  String?
+  organization    Organization?   @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  lastLoginAt     DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  auditLogs       AuditLog[]
 
+  @@unique([email, integrationMode])
   @@index([organizationId])
   @@index([role])
+  @@index([integrationMode])
 }
 
 model Organization {
-  id          String         @id @default(cuid())
-  name        String
-  legalName   String?
-  pntn        String?
-  industry    String?
-  isActive    Boolean        @default(true)
-  plan        String         @default("starter")
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  users       User[]
-  branches    Branch[]
-  qbo         QboConnection?
-  pra         PraConnection?
-  mappings    FieldMapping[]
-  invoices    InvoiceSync[]
-  auditLogs   AuditLog[]
+  id              String          @id @default(cuid())
+  name            String
+  legalName       String?
+  pntn            String?
+  industry        String?
+  integrationMode IntegrationMode @default(PRA)
+  isActive        Boolean         @default(true)
+  plan            String          @default("starter")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  users           User[]
+  branches        Branch[]
+  qbo             QboConnection?
+  pra             PraConnection?
+  fbr             FbrConnection?
+  mappings        FieldMapping[]
+  invoices        InvoiceSync[]
+  fbrInvoices     FbrInvoiceSync[]
+  auditLogs       AuditLog[]
+
+  @@index([integrationMode])
 }
 
 model Branch {
@@ -89,18 +100,18 @@ model Branch {
 }
 
 model QboConnection {
-  id              String           @id @default(cuid())
-  organizationId  String           @unique
-  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  realmId         String?
-  companyName     String?
-  accessToken     String?
-  refreshToken    String?
-  tokenExpiresAt  DateTime?
-  status          ConnectionStatus @default(DISCONNECTED)
-  lastSyncedAt    DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  id             String           @id @default(cuid())
+  organizationId String           @unique
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  realmId        String?
+  companyName    String?
+  accessToken    String?
+  refreshToken     String?
+  tokenExpiresAt DateTime?
+  status         ConnectionStatus @default(DISCONNECTED)
+  lastSyncedAt   DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 }
 
 model PraConnection {
@@ -115,6 +126,23 @@ model PraConnection {
   lastPostedAt   DateTime?
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
+}
+
+model FbrConnection {
+  id                 String           @id @default(cuid())
+  organizationId     String           @unique
+  organization       Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sellerNTNCNIC      String?
+  sellerBusinessName String?
+  sellerProvince     String?
+  sellerAddress      String?
+  environment        String           @default("sandbox")
+  apiBaseUrl         String           @default("https://gw.fbr.gov.pk")
+  apiToken           String?
+  status             ConnectionStatus @default(DISCONNECTED)
+  lastPostedAt       DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
 }
 
 model FieldMapping {
@@ -134,38 +162,67 @@ model FieldMapping {
   @@index([organizationId, section, sortOrder])
 }
 
+/// PRA fiscalization records — stores PRA fiscal invoice number only.
 model InvoiceSync {
-  id               String            @id @default(cuid())
-  organizationId   String
-  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  qboInvoiceId     String
-  usin             String?
-  fiscalInvoiceNo  String?
-  status           InvoiceSyncStatus @default(PENDING)
-  totalAmount      Float?
-  customerName     String?
-  praPayload       Json?
-  praResponse      Json?
-  errorMessage     String?
-  postedAt         DateTime?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  id              String            @id @default(cuid())
+  organizationId  String
+  organization    Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  qboInvoiceId    String
+  usin            String?
+  fiscalInvoiceNo String?
+  status          InvoiceSyncStatus @default(PENDING)
+  totalAmount     Float?
+  customerName    String?
+  praPayload      Json?
+  praResponse     Json?
+  errorMessage    String?
+  postedAt        DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@unique([organizationId, qboInvoiceId])
+  @@index([organizationId, status])
+}
+
+/// FBR DI records — stores FBR invoice number only (never mixed with PRA fiscal numbers).
+model FbrInvoiceSync {
+  id                    String            @id @default(cuid())
+  organizationId        String
+  organization          Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  qboInvoiceId          String
+  usin                  String?
+  scenarioId            String?
+  fbrInvoiceNo          String?
+  status                InvoiceSyncStatus @default(PENDING)
+  totalAmount           Float?
+  customerName          String?
+  validatePayload       Json?
+  validateResponse      Json?
+  postPayload           Json?
+  postResponse          Json?
+  validatedPayloadHash  String?
+  errorMessage          String?
+  postedAt              DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   @@unique([organizationId, qboInvoiceId])
   @@index([organizationId, status])
 }
 
 model AuditLog {
-  id             String        @id @default(cuid())
-  organizationId String?
-  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  userId         String?
-  user           User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  action         String
-  entity         String?
-  meta           Json?
-  createdAt      DateTime      @default(now())
+  id              String          @id @default(cuid())
+  organizationId  String?
+  organization    Organization?   @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  userId          String?
+  user            User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  integrationMode IntegrationMode @default(PRA)
+  action          String
+  entity          String?
+  meta            Json?
+  createdAt       DateTime        @default(now())
 
   @@index([organizationId])
+  @@index([integrationMode])
   @@index([createdAt])
 }

@@ -11,10 +11,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import { ConnectionStatus, Prisma, Role } from '@prisma/client';
+import { ConnectionStatus, IntegrationMode, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/guards';
 import { CreateCompanyDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
+import {
+  FBR_DEFAULT_BASE_URL,
+  sanitizeFbr,
+} from '../common/integration-mode';
 
 function defaultPraUrl(environment: string) {
   return environment === 'production'
@@ -33,6 +37,7 @@ function sanitizeCompany(org: any) {
   return {
     ...org,
     pra: sanitizePra(org.pra),
+    fbr: sanitizeFbr(org.fbr),
     qbo: org.qbo
       ? (() => {
           const { accessToken, refreshToken, ...qboSafe } = org.qbo;
@@ -51,28 +56,51 @@ function sanitizeCompany(org: any) {
 export class AdminController {
   constructor(private prisma: PrismaService) {}
 
+  private adminMode(req: any): IntegrationMode {
+    return req.user?.integrationMode || IntegrationMode.PRA;
+  }
+
   @Get('overview')
-  async overview() {
+  async overview(@Req() req: any) {
+    const mode = this.adminMode(req);
+    const orgWhere = { integrationMode: mode };
     const [
       organizations,
       activeOrganizations,
       users,
       connectedQbo,
       connectedPra,
+      connectedFbr,
       postedInvoices,
       failedInvoices,
       pendingInvoices,
       recentLogs,
     ] = await Promise.all([
-      this.prisma.organization.count(),
-      this.prisma.organization.count({ where: { isActive: true } }),
-      this.prisma.user.count({ where: { role: { not: Role.SUPER_ADMIN } } }),
-      this.prisma.qboConnection.count({ where: { status: 'CONNECTED' } }),
-      this.prisma.praConnection.count({ where: { status: 'CONNECTED' } }),
-      this.prisma.invoiceSync.count({ where: { status: 'POSTED' } }),
-      this.prisma.invoiceSync.count({ where: { status: 'FAILED' } }),
-      this.prisma.invoiceSync.count({ where: { status: 'PENDING' } }),
+      this.prisma.organization.count({ where: orgWhere }),
+      this.prisma.organization.count({ where: { ...orgWhere, isActive: true } }),
+      this.prisma.user.count({
+        where: { role: { not: Role.SUPER_ADMIN }, integrationMode: mode },
+      }),
+      this.prisma.qboConnection.count({
+        where: { status: 'CONNECTED', organization: orgWhere },
+      }),
+      this.prisma.praConnection.count({
+        where: { status: 'CONNECTED', organization: orgWhere },
+      }),
+      this.prisma.fbrConnection.count({
+        where: { status: 'CONNECTED', organization: orgWhere },
+      }),
+      mode === IntegrationMode.FBR
+        ? this.prisma.fbrInvoiceSync.count({ where: { status: 'POSTED' } })
+        : this.prisma.invoiceSync.count({ where: { status: 'POSTED' } }),
+      mode === IntegrationMode.FBR
+        ? this.prisma.fbrInvoiceSync.count({ where: { status: 'FAILED' } })
+        : this.prisma.invoiceSync.count({ where: { status: 'FAILED' } }),
+      mode === IntegrationMode.FBR
+        ? this.prisma.fbrInvoiceSync.count({ where: { status: 'PENDING' } })
+        : this.prisma.invoiceSync.count({ where: { status: 'PENDING' } }),
       this.prisma.auditLog.findMany({
+        where: { integrationMode: mode },
         take: 12,
         orderBy: { createdAt: 'desc' },
         include: {
@@ -83,12 +111,14 @@ export class AdminController {
     ]);
 
     return {
+      integrationMode: mode,
       kpis: {
         companies: organizations,
         activeCompanies: activeOrganizations,
         users,
         connectedQbo,
         connectedPra,
+        connectedFbr,
         postedInvoices,
         failedInvoices,
         pendingInvoices,
@@ -107,6 +137,7 @@ export class AdminController {
     return {
       qbo: true,
       pra: true,
+      fbr: true,
       users: {
         where: { role: { in: [Role.CUSTOMER_ADMIN, Role.CUSTOMER_USER] } },
         orderBy: { createdAt: 'asc' as const },
@@ -123,14 +154,17 @@ export class AdminController {
     };
   }
 
-  private buildCompanyWhere(query: {
+  private buildCompanyWhere(
+    mode: IntegrationMode,
+    query: {
     q?: string;
     environment?: string;
     qbo?: string;
     pra?: string;
+    fbr?: string;
     active?: string;
   }): Prisma.OrganizationWhereInput {
-    const where: Prisma.OrganizationWhereInput = {};
+    const where: Prisma.OrganizationWhereInput = { integrationMode: mode };
 
     if (query.q?.trim()) {
       const q = query.q.trim();
@@ -163,6 +197,17 @@ export class AdminController {
       where.pra = praWhere;
     }
 
+    const fbrWhere: Prisma.FbrConnectionWhereInput = {};
+    if (query.environment === 'sandbox' || query.environment === 'production') {
+      fbrWhere.environment = query.environment;
+    }
+    if (query.fbr === 'CONNECTED' || query.fbr === 'DISCONNECTED') {
+      fbrWhere.status = query.fbr as ConnectionStatus;
+    }
+    if (Object.keys(fbrWhere).length) {
+      where.fbr = fbrWhere;
+    }
+
     if (query.active === 'true') where.isActive = true;
     if (query.active === 'false') where.isActive = false;
 
@@ -171,15 +216,18 @@ export class AdminController {
 
   @Get('companies')
   async companies(
+    @Req() req: any,
     @Query('q') q?: string,
     @Query('environment') environment?: string,
     @Query('qbo') qbo?: string,
     @Query('pra') pra?: string,
+    @Query('fbr') fbr?: string,
     @Query('active') active?: string,
   ) {
+    const mode = this.adminMode(req);
     try {
       const rows = await this.prisma.organization.findMany({
-        where: this.buildCompanyWhere({ q, environment, qbo, pra, active }),
+        where: this.buildCompanyWhere(mode, { q, environment, qbo, pra, fbr, active }),
         include: this.companyInclude(),
         orderBy: { createdAt: 'desc' },
       });
@@ -194,9 +242,10 @@ export class AdminController {
   }
 
   @Get('companies/:id')
-  async company(@Param('id') id: string) {
-    const org = await this.prisma.organization.findUnique({
-      where: { id },
+  async company(@Param('id') id: string, @Req() req: any) {
+    const mode = this.adminMode(req);
+    const org = await this.prisma.organization.findFirst({
+      where: { id, integrationMode: mode },
       include: {
         ...this.companyInclude(),
         branches: true,
@@ -209,38 +258,56 @@ export class AdminController {
 
   @Post('companies')
   async createCompany(@Body() dto: CreateCompanyDto, @Req() req: any) {
+    const mode = this.adminMode(req);
     const email = dto.companyEmail.toLowerCase().trim();
-    const exists = await this.prisma.user.findUnique({ where: { email } });
+    const exists = await this.prisma.user.findUnique({
+      where: { email_integrationMode: { email, integrationMode: mode } },
+    });
     if (exists) throw new BadRequestException('Email already registered');
 
     const environment = dto.environment || 'sandbox';
-    const apiUrl = dto.praApiUrl?.trim() || defaultPraUrl(environment);
-    const apiToken = dto.praToken?.trim() || null;
-    const praStatus =
-      apiToken ? ConnectionStatus.CONNECTED : ConnectionStatus.DISCONNECTED;
-
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const companyName = dto.companyName.trim();
 
     const org = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.organization.create({
-        data: {
-          name: companyName,
-          legalName: companyName,
-          qbo: { create: { status: ConnectionStatus.DISCONNECTED } },
-          pra: {
-            create: {
-              environment,
-              apiUrl,
-              apiToken,
-              status: praStatus,
-            },
-          },
-          branches: {
-            create: [{ name: 'Head Office', isDefault: true }],
-          },
+      const base: Prisma.OrganizationCreateInput = {
+        name: companyName,
+        legalName: companyName,
+        integrationMode: mode,
+        qbo: { create: { status: ConnectionStatus.DISCONNECTED } },
+        branches: {
+          create: [{ name: 'Head Office', isDefault: true }],
         },
-      });
+      };
+
+      if (mode === IntegrationMode.FBR) {
+        const apiToken = dto.fbrToken?.trim() || null;
+        base.fbr = {
+          create: {
+            environment,
+            apiBaseUrl: FBR_DEFAULT_BASE_URL,
+            sellerNTNCNIC: dto.sellerNTNCNIC?.trim() || null,
+            sellerBusinessName: dto.sellerBusinessName?.trim() || companyName,
+            sellerProvince: dto.sellerProvince?.trim() || null,
+            sellerAddress: dto.sellerAddress?.trim() || null,
+            apiToken,
+            status: apiToken ? ConnectionStatus.CONNECTED : ConnectionStatus.DISCONNECTED,
+          },
+        };
+      } else {
+        const apiUrl = dto.praApiUrl?.trim() || defaultPraUrl(environment);
+        const apiToken = dto.praToken?.trim() || null;
+        base.pra = {
+          create: {
+            environment,
+            apiUrl,
+            apiToken,
+            status: apiToken ? ConnectionStatus.CONNECTED : ConnectionStatus.DISCONNECTED,
+          },
+        };
+      }
+
+      const created = await tx.organization.create({ data: base });
 
       await tx.user.create({
         data: {
@@ -248,6 +315,7 @@ export class AdminController {
           passwordHash,
           fullName: `${companyName} Admin`,
           role: Role.CUSTOMER_ADMIN,
+          integrationMode: mode,
           organizationId: created.id,
         },
       });
@@ -256,9 +324,10 @@ export class AdminController {
         data: {
           organizationId: created.id,
           userId: req.user?.id,
+          integrationMode: mode,
           action: 'ADMIN_COMPANY_CREATE',
           entity: 'Organization',
-          meta: { companyName, adminEmail: email, environment },
+          meta: { companyName, adminEmail: email, environment, mode },
         },
       });
 
@@ -278,32 +347,28 @@ export class AdminController {
     @Body() dto: UpdateCompanyDto,
     @Req() req: any,
   ) {
-    const org = await this.prisma.organization.findUnique({
-      where: { id },
+    const mode = this.adminMode(req);
+    const org = await this.prisma.organization.findFirst({
+      where: { id, integrationMode: mode },
       include: {
         pra: true,
+        fbr: true,
         users: { where: { role: Role.CUSTOMER_ADMIN }, take: 1 },
       },
     });
     if (!org) throw new BadRequestException('Company not found');
 
     const admin = org.users[0];
-    const environment = dto.environment || org.pra?.environment || 'sandbox';
-    const apiUrl =
-      dto.praApiUrl?.trim() ||
-      org.pra?.apiUrl ||
-      defaultPraUrl(environment);
-    const apiToken =
-      dto.praToken !== undefined && dto.praToken.trim() !== ''
-        ? dto.praToken.trim()
-        : org.pra?.apiToken || null;
-    const praStatus =
-      apiToken ? ConnectionStatus.CONNECTED : ConnectionStatus.DISCONNECTED;
+    const environment = dto.environment || org.pra?.environment || org.fbr?.environment || 'sandbox';
 
     if (dto.companyEmail) {
       const email = dto.companyEmail.toLowerCase().trim();
       const clash = await this.prisma.user.findFirst({
-        where: { email, id: admin ? { not: admin.id } : undefined },
+        where: {
+          email,
+          integrationMode: mode,
+          id: admin ? { not: admin.id } : undefined,
+        },
       });
       if (clash) throw new BadRequestException('Email already in use');
     }
@@ -319,22 +384,68 @@ export class AdminController {
         });
       }
 
-      await tx.praConnection.upsert({
-        where: { organizationId: id },
-        create: {
-          organizationId: id,
-          environment,
-          apiUrl,
-          apiToken,
-          status: praStatus,
-        },
-        update: {
-          environment,
-          apiUrl,
-          apiToken,
-          status: praStatus,
-        },
-      });
+      if (mode === IntegrationMode.FBR) {
+        const apiToken =
+          dto.fbrToken !== undefined && dto.fbrToken.trim() !== ''
+            ? dto.fbrToken.trim()
+            : org.fbr?.apiToken || null;
+        const fbrStatus =
+          apiToken ? ConnectionStatus.CONNECTED : ConnectionStatus.DISCONNECTED;
+
+        await tx.fbrConnection.upsert({
+          where: { organizationId: id },
+          create: {
+            organizationId: id,
+            environment,
+            apiBaseUrl: FBR_DEFAULT_BASE_URL,
+            sellerNTNCNIC: dto.sellerNTNCNIC?.trim() || org.fbr?.sellerNTNCNIC || null,
+            sellerBusinessName:
+              dto.sellerBusinessName?.trim() || org.fbr?.sellerBusinessName || org.name,
+            sellerProvince: dto.sellerProvince?.trim() || org.fbr?.sellerProvince || null,
+            sellerAddress: dto.sellerAddress?.trim() || org.fbr?.sellerAddress || null,
+            apiToken,
+            status: fbrStatus,
+          },
+          update: {
+            environment,
+            sellerNTNCNIC: dto.sellerNTNCNIC?.trim() || org.fbr?.sellerNTNCNIC || null,
+            sellerBusinessName:
+              dto.sellerBusinessName?.trim() || org.fbr?.sellerBusinessName || org.name,
+            sellerProvince: dto.sellerProvince?.trim() || org.fbr?.sellerProvince || null,
+            sellerAddress: dto.sellerAddress?.trim() || org.fbr?.sellerAddress || null,
+            apiToken,
+            status: fbrStatus,
+          },
+        });
+      } else {
+        const apiUrl =
+          dto.praApiUrl?.trim() ||
+          org.pra?.apiUrl ||
+          defaultPraUrl(environment);
+        const apiToken =
+          dto.praToken !== undefined && dto.praToken.trim() !== ''
+            ? dto.praToken.trim()
+            : org.pra?.apiToken || null;
+        const praStatus =
+          apiToken ? ConnectionStatus.CONNECTED : ConnectionStatus.DISCONNECTED;
+
+        await tx.praConnection.upsert({
+          where: { organizationId: id },
+          create: {
+            organizationId: id,
+            environment,
+            apiUrl,
+            apiToken,
+            status: praStatus,
+          },
+          update: {
+            environment,
+            apiUrl,
+            apiToken,
+            status: praStatus,
+          },
+        });
+      }
 
       if (admin) {
         const userData: Prisma.UserUpdateInput = {};
@@ -349,13 +460,14 @@ export class AdminController {
         data: {
           organizationId: id,
           userId: req.user?.id,
+          integrationMode: mode,
           action: 'ADMIN_COMPANY_UPDATE',
           entity: 'Organization',
           meta: {
             companyName: dto.companyName?.trim() || org.name,
             adminEmail: dto.companyEmail?.toLowerCase() || admin?.email,
             environment,
-            hasToken: Boolean(apiToken),
+            mode,
           },
         },
       });
@@ -376,8 +488,8 @@ export class AdminController {
 
   /** @deprecated use GET /admin/companies/:id */
   @Get('organizations/:id')
-  async organization(@Param('id') id: string) {
-    return this.company(id);
+  async organization(@Param('id') id: string, @Req() req: any) {
+    return this.company(id, req);
   }
 
   /** @deprecated use PATCH /admin/companies/:id */
@@ -412,17 +524,20 @@ export class AdminController {
   }
 
   @Get('users')
-  async users() {
+  async users(@Req() req: any) {
+    const mode = this.adminMode(req);
     return this.prisma.user.findMany({
-      where: { role: { not: Role.SUPER_ADMIN } },
+      where: { role: { not: Role.SUPER_ADMIN }, integrationMode: mode },
       include: { organization: { select: { id: true, name: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }
 
   @Get('logs')
-  async logs() {
+  async logs(@Req() req: any) {
+    const mode = this.adminMode(req);
     return this.prisma.auditLog.findMany({
+      where: { integrationMode: mode },
       take: 100,
       orderBy: { createdAt: 'desc' },
       include: {
@@ -433,7 +548,15 @@ export class AdminController {
   }
 
   @Get('invoices')
-  async invoices() {
+  async invoices(@Req() req: any) {
+    const mode = this.adminMode(req);
+    if (mode === IntegrationMode.FBR) {
+      return this.prisma.fbrInvoiceSync.findMany({
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        include: { organization: { select: { name: true } } },
+      });
+    }
     return this.prisma.invoiceSync.findMany({
       take: 100,
       orderBy: { createdAt: 'desc' },

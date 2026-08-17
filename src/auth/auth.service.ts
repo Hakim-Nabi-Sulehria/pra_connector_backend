@@ -6,7 +6,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomInt } from 'crypto';
-import { Role } from '@prisma/client';
+import { Role, IntegrationMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   LoginDto,
@@ -15,6 +15,7 @@ import {
   RequestPasswordResetDto,
   VerifyPasswordResetOtpDto,
 } from './dto';
+import { parseIntegrationMode, sanitizeFbr } from '../common/integration-mode';
 
 @Injectable()
 export class AuthService {
@@ -37,12 +38,14 @@ export class AuthService {
     email: string;
     role: Role;
     organizationId: string | null;
+    integrationMode: IntegrationMode;
   }) {
     const accessToken = await this.jwt.signAsync({
       sub: user.id,
       email: user.email,
       role: user.role,
       organizationId: user.organizationId,
+      integrationMode: user.integrationMode,
     });
     return accessToken;
   }
@@ -60,7 +63,19 @@ export class AuthService {
         pra: { ...praSafe, hasToken: Boolean(apiToken) },
       };
     }
+    if (safe.organization?.fbr) {
+      safe.organization = {
+        ...safe.organization,
+        fbr: sanitizeFbr(safe.organization.fbr),
+      };
+    }
     return safe;
+  }
+
+  private userInclude() {
+    return {
+      organization: { include: { qbo: true, pra: true, fbr: true } },
+    };
   }
 
   async login(dto: LoginDto, expectedPortal?: 'admin' | 'customer') {
@@ -69,9 +84,11 @@ export class AuthService {
         throw new BadRequestException('Captcha is required');
       }
     }
+    const mode = parseIntegrationMode(dto.integrationMode);
+    const email = dto.email.toLowerCase();
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email.toLowerCase() },
-      include: { organization: true },
+      where: { email_integrationMode: { email, integrationMode: mode } },
+      include: this.userInclude(),
     });
     if (!user || !user.isActive) {
       throw new UnauthorizedException('Invalid email or password');
@@ -98,9 +115,10 @@ export class AuthService {
       data: {
         userId: user.id,
         organizationId: user.organizationId,
+        integrationMode: mode,
         action: 'LOGIN',
         entity: 'User',
-        meta: { portal: expectedPortal || 'auto' },
+        meta: { portal: expectedPortal || 'auto', integrationMode: mode },
       },
     });
 
@@ -114,8 +132,8 @@ export class AuthService {
     }
 
     const email = dto.email.toLowerCase();
-    const user = await this.prisma.user.findUnique({
-      where: { email },
+    const user = await this.prisma.user.findFirst({
+      where: { email, integrationMode: IntegrationMode.PRA },
     });
 
     // Requirement: allow login only for existing emails.
@@ -149,7 +167,9 @@ export class AuthService {
     const email = dto.email.toLowerCase();
     const otpHash = this.otpHash(dto.otp.trim());
 
-    const user = await this.prisma.user.findUnique({ where: { email } });
+    const user = await this.prisma.user.findFirst({
+      where: { email, integrationMode: IntegrationMode.PRA },
+    });
     if (!user || !user.isActive || user.role === Role.SUPER_ADMIN) {
       throw new UnauthorizedException('Invalid or expired OTP');
     }
@@ -192,7 +212,9 @@ export class AuthService {
     const email = dto.email.toLowerCase();
     const otpHash = this.otpHash(dto.otp.trim());
 
-    const user = await this.prisma.user.findUnique({ where: { email } });
+    const user = await this.prisma.user.findFirst({
+      where: { email, integrationMode: IntegrationMode.PRA },
+    });
     if (!user || !user.isActive || user.role === Role.SUPER_ADMIN) {
       throw new UnauthorizedException('Invalid reset request');
     }
@@ -256,38 +278,49 @@ export class AuthService {
 
   async registerCustomer(dto: RegisterCustomerDto) {
     const email = dto.email.toLowerCase();
-    const exists = await this.prisma.user.findUnique({ where: { email } });
+    const mode = parseIntegrationMode(dto.integrationMode);
+    const exists = await this.prisma.user.findUnique({
+      where: { email_integrationMode: { email, integrationMode: mode } },
+    });
     if (exists) throw new BadRequestException('Email already registered');
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const result = await this.prisma.$transaction(async (tx) => {
-      const org = await tx.organization.create({
-        data: {
-          name: dto.organizationName,
-          legalName: dto.organizationName,
-          pntn: dto.pntn,
-          qbo: { create: {} },
-          pra: { create: { environment: 'sandbox' } },
-          branches: {
-            create: [{ name: 'Head Office', isDefault: true }],
-          },
+      const orgData: any = {
+        name: dto.organizationName,
+        legalName: dto.organizationName,
+        pntn: dto.pntn,
+        integrationMode: mode,
+        qbo: { create: {} },
+        branches: {
+          create: [{ name: 'Head Office', isDefault: true }],
         },
-      });
+      };
+
+      if (mode === IntegrationMode.FBR) {
+        orgData.fbr = { create: { environment: 'sandbox' } };
+      } else {
+        orgData.pra = { create: { environment: 'sandbox' } };
+      }
+
+      const org = await tx.organization.create({ data: orgData });
       const user = await tx.user.create({
         data: {
           email,
           passwordHash,
           fullName: dto.fullName,
           role: Role.CUSTOMER_ADMIN,
+          integrationMode: mode,
           organizationId: org.id,
         },
-        include: { organization: true },
+        include: this.userInclude(),
       });
 
       await tx.auditLog.create({
         data: {
           userId: user.id,
           organizationId: org.id,
+          integrationMode: mode,
           action: 'REGISTER',
           entity: 'Organization',
         },
@@ -303,7 +336,7 @@ export class AuthService {
   async me(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      include: { organization: { include: { qbo: true, pra: true } } },
+      include: this.userInclude(),
     });
     if (!user) throw new UnauthorizedException();
     return this.sanitize(user);

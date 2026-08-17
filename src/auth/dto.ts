@@ -1,4 +1,4 @@
-import { IsEmail, IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsEnum, IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 import { Role } from '@prisma/client';
 
 export class LoginDto {
@@ -8,6 +8,11 @@ export class LoginDto {
   @IsString()
   @MinLength(6)
   password!: string;
+
+  /** PRA or FBR — keeps sessions and records isolated per integration mode. */
+  @IsOptional()
+  @IsIn(['PRA', 'FBR'])
+  integrationMode?: 'PRA' | 'FBR';
 
   // Captcha is enforced for customer portal login.
   @IsOptional()
@@ -33,6 +38,10 @@ export class RegisterCustomerDto {
   @IsOptional()
   @IsString()
   pntn?: string;
+
+  @IsOptional()
+  @IsIn(['PRA', 'FBR'])
+  integrationMode?: 'PRA' | 'FBR';
 }
 
 export class CreateOrgUserDto {

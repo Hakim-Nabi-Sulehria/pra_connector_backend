@@ -6,6 +6,7 @@ import { AuthModule } from './auth/auth.module';
 import { AdminModule } from './admin/admin.module';
 import { CustomerModule } from './customer/customer.module';
 import { QboModule } from './qbo/qbo.module';
+import { FbrModule } from './fbr/fbr.module';
 import { JwtAuthGuard, RolesGuard } from './common/guards';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -18,6 +19,7 @@ import { AppService } from './app.service';
     AdminModule,
     CustomerModule,
     QboModule,
+    FbrModule,
   ],
   controllers: [AppController],
   providers: [

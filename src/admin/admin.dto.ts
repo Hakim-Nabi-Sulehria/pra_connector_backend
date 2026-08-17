@@ -21,6 +21,27 @@ export class CreateCompanyDto {
 
   @IsIn(['sandbox', 'production'])
   environment!: string;
+
+  /** FBR seller profile (required when creating FBR-mode companies). */
+  @IsOptional()
+  @IsString()
+  sellerNTNCNIC?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerBusinessName?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerProvince?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  fbrToken?: string;
 }
 
 export class UpdateCompanyDto {
@@ -49,6 +70,26 @@ export class UpdateCompanyDto {
   @IsOptional()
   @IsIn(['sandbox', 'production'])
   environment?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerNTNCNIC?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerBusinessName?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerProvince?: string;
+
+  @IsOptional()
+  @IsString()
+  sellerAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  fbrToken?: string;
 }
 
 export class UpdateQboConfigDto {
