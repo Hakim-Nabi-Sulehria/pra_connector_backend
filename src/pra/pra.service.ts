@@ -3,7 +3,6 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import axios from 'axios';
 import {
   ConnectionStatus,
   InvoiceSyncStatus,
@@ -15,6 +14,7 @@ import {
   resolveSampleValue,
   type MappingExtras,
 } from '../mappings/mapping.defaults';
+import { praHttpPost, praTlsProbe } from './pra-http.client';
 
 export type PraPostItem = {
   ItemCode: string;
@@ -369,26 +369,38 @@ export class PraService {
     const url = (conn.apiUrl || defaultPraUrl(conn.environment)).trim();
 
     try {
-      const res = await axios.post(url, payload, {
-        headers: {
-          Authorization: `Bearer ${conn.apiToken}`,
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        timeout: 60000,
-        validateStatus: () => true,
+      const res = await praHttpPost(url, payload, {
+        Authorization: `Bearer ${conn.apiToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
       });
       return {
-        httpStatus: res.status,
+        httpStatus: res.httpStatus,
         body: res.data,
         requestUrl: url,
       };
     } catch (err: any) {
       this.logger.error(`PRA PostData transport error: ${err.message}`);
+      const hint =
+        conn.environment === 'production'
+          ? ' Production PRA requires your server outbound IP to be whitelisted with PRA (eims@pra.punjab.gov.pk).'
+          : '';
       throw new BadRequestException(
-        `PRA PostData request failed: ${err.message}`,
+        `PRA PostData request failed: ${err.message}.${hint}`,
       );
     }
+  }
+
+  async testConnection(organizationId: string) {
+    const conn = await this.getConnection(organizationId);
+    const url = (conn.apiUrl || defaultPraUrl(conn.environment)).trim();
+    const probe = await praTlsProbe(url, conn.apiToken!);
+    return {
+      ...probe,
+      environment: conn.environment,
+      requestUrl: url,
+      posId: conn.posId,
+    };
   }
 
   parsePost(body: any): {
@@ -486,7 +498,8 @@ export class PraService {
     }
 
     const result = await this.postToPra(organizationId, payload);
-    const parsed = this.parsePost(result.body);
+    const praBody = result.body as Record<string, unknown>;
+    const parsed = this.parsePost(praBody);
 
     if (!parsed.ok) {
       const msg =
@@ -504,13 +517,13 @@ export class PraService {
           totalAmount: payload.TotalBillAmount,
           status: InvoiceSyncStatus.FAILED,
           praPayload: { draft, submitted: payload } as any,
-          praResponse: result.body,
+          praResponse: praBody as any,
           errorMessage: msg,
         },
         update: {
           status: InvoiceSyncStatus.FAILED,
           praPayload: { draft, submitted: payload } as any,
-          praResponse: result.body,
+          praResponse: praBody as any,
           errorMessage: msg,
         },
       });
@@ -555,7 +568,7 @@ export class PraService {
         postedAt: new Date(),
         praPayload: { draft, submitted: payload } as any,
         praResponse: {
-          ...result.body,
+          ...(praBody || {}),
           qboCustomFieldName: fieldName,
           qboWriteOk: qboWriteVerified,
           qboWriteVerified,
@@ -574,7 +587,7 @@ export class PraService {
         errorMessage: null,
         praPayload: { draft, submitted: payload } as any,
         praResponse: {
-          ...result.body,
+          ...(praBody || {}),
           qboCustomFieldName: fieldName,
           qboWriteOk: qboWriteVerified,
           qboWriteVerified,

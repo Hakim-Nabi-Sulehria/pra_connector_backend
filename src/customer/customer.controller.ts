@@ -520,6 +520,11 @@ export class CustomerController {
     return result;
   }
 
+  @Get('pra/ping')
+  async praPing(@Req() req: any) {
+    return this.praService.testConnection(this.orgId(req));
+  }
+
   @Post('invoices/attach-fiscal')
   async attachFiscal(@Req() req: any, @Body() dto: AttachFiscalDto) {
     const organizationId = this.orgId(req);
