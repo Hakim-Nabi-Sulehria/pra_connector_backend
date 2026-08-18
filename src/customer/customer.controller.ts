@@ -246,11 +246,13 @@ export class CustomerController {
     @Query('returnOrigin') returnOrigin?: string,
     @Query('returnPath') returnPath?: string,
   ) {
+    const mode = req.user?.integrationMode === 'FBR' ? 'FBR' : 'PRA';
     const url = this.qbo.getAuthUri(
       this.orgId(req),
       req.user.id,
       returnOrigin,
-      returnPath,
+      returnPath || (mode === 'FBR' ? '/fbr/app/connections' : '/app/connections'),
+      mode,
     );
     return { url };
   }

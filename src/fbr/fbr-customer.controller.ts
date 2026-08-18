@@ -191,6 +191,7 @@ export class FbrCustomerController {
       req.user.id,
       returnOrigin,
       returnPath || '/fbr/app/connections',
+      'FBR',
     );
     return { url };
   }

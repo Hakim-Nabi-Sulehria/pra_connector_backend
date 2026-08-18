@@ -66,6 +66,7 @@ export class QboService {
     userId: string,
     returnOrigin?: string,
     returnPath?: string,
+    mode?: 'PRA' | 'FBR',
   ) {
     if (!organizationId || !userId) {
       throw new BadRequestException('Organization and user are required for QBO connect');
@@ -76,6 +77,7 @@ export class QboService {
       userId,
       returnOrigin: returnOrigin || null,
       returnPath: returnPath || null,
+      mode: mode || null,
       t: Date.now(),
     });
     return oauth.authorizeUri({
@@ -178,7 +180,12 @@ export class QboService {
       },
     });
 
-    return { qbo, returnOrigin: state.returnOrigin, returnPath: state.returnPath };
+    return {
+      qbo,
+      returnOrigin: state.returnOrigin,
+      returnPath: state.returnPath,
+      mode: state.mode,
+    };
   }
 
   private async ensureTokens(organizationId: string) {

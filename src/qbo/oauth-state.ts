@@ -6,6 +6,7 @@ export type QboOAuthState = {
   userId: string;
   returnOrigin?: string | null;
   returnPath?: string | null;
+  mode?: 'PRA' | 'FBR' | null;
   t: number;
 };
 
@@ -81,9 +82,27 @@ export function peekReturnPath(raw?: string): string | null {
   }
 }
 
-export function safeQboReturnPath(path?: string | null) {
-  const raw = String(path || '').split('?')[0];
+export function peekMode(raw?: string): 'PRA' | 'FBR' | null {
+  if (!raw) return null;
+  try {
+    const mode = decodeQboOAuthState(raw).mode;
+    return mode === 'FBR' || mode === 'PRA' ? mode : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeMaybe(value: string) {
+  try {
+    return value.includes('%') ? decodeURIComponent(value) : value;
+  } catch {
+    return value;
+  }
+}
+
+export function safeQboReturnPath(path?: string | null, mode?: string | null) {
+  let raw = decodeMaybe(String(path || '')).split('?')[0];
   if (raw.startsWith('/fbr/app')) return raw;
   if (raw.startsWith('/app')) return raw;
-  return '/app/connections';
+  return mode === 'FBR' ? '/fbr/app/connections' : '/app/connections';
 }
