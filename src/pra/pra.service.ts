@@ -14,7 +14,7 @@ import {
   resolveSampleValue,
   type MappingExtras,
 } from '../mappings/mapping.defaults';
-import { praHttpPost, praTlsProbe } from './pra-http.client';
+import { praHttpPost } from './pra-http.client';
 
 export type PraPostItem = {
   ItemCode: string;
@@ -382,26 +382,8 @@ export class PraService {
       };
     } catch (err: any) {
       this.logger.error(`PRA PostData transport error: ${err.message}`);
-      const hint =
-        conn.environment === 'production'
-          ? ' Production PRA requires your server outbound IP to be whitelisted with PRA (eims@pra.punjab.gov.pk).'
-          : '';
-      throw new BadRequestException(
-        `PRA PostData request failed: ${err.message}.${hint}`,
-      );
+      throw new BadRequestException('Unable to connect to PRA. Please try again.');
     }
-  }
-
-  async testConnection(organizationId: string) {
-    const conn = await this.getConnection(organizationId);
-    const url = (conn.apiUrl || defaultPraUrl(conn.environment)).trim();
-    const probe = await praTlsProbe(url, conn.apiToken!);
-    return {
-      ...probe,
-      environment: conn.environment,
-      requestUrl: url,
-      posId: conn.posId,
-    };
   }
 
   parsePost(body: any): {
@@ -528,7 +510,7 @@ export class PraService {
           errorMessage: msg,
         },
       });
-      throw new BadRequestException(msg);
+      throw new BadRequestException(msg || 'PRA rejected the invoice.');
     }
 
     const fiscalInvoiceNo = parsed.fiscalInvoiceNo!;
@@ -609,11 +591,7 @@ export class PraService {
 
     return {
       ...row,
-      qboWriteOk: qboWriteVerified,
-      qboWriteVerified,
-      qboWriteError,
-      praCode: parsed.code,
-      praMessage: parsed.message,
+      fiscalInvoiceNo,
     };
   }
 }

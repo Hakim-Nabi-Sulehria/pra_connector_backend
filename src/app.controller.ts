@@ -11,10 +11,4 @@ export class AppController {
   health() {
     return this.appService.health();
   }
-
-  @Public()
-  @Get('health/pra-tls')
-  praTlsHealth() {
-    return this.appService.praTlsHealth();
-  }
 }
