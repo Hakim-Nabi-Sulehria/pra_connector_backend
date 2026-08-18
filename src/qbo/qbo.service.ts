@@ -81,10 +81,7 @@ export class QboService {
       t: Date.now(),
     });
     return oauth.authorizeUri({
-      scope: [
-        OAuthClient.scopes.Accounting,
-        'app-foundations.custom-field-definitions.read',
-      ],
+      scope: [OAuthClient.scopes.Accounting],
       state,
     });
   }
