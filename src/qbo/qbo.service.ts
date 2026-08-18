@@ -89,15 +89,53 @@ export class QboService {
     });
   }
 
-  async handleCallback(fullUrl: string, query: Record<string, string>) {
+  private firstQuery(value: unknown) {
+    if (Array.isArray(value)) return String(value[0] || '').trim();
+    return String(value || '').trim();
+  }
+
+  async handleCallback(fullUrl: string, query: Record<string, any>) {
+    const code = this.firstQuery(query.code);
+    const stateRaw = this.firstQuery(query.state);
+    const intuitError = this.firstQuery(query.error);
+    if (intuitError) {
+      throw new BadRequestException(
+        this.firstQuery(query.error_description) || intuitError,
+      );
+    }
+    if (!code) throw new BadRequestException('Missing OAuth authorization code');
+    if (!stateRaw) throw new BadRequestException('Missing OAuth state');
+
     const oauth = this.createClient();
-    const authResponse = await oauth.createToken(fullUrl);
+    const redirectUri = this.env('QBO_REDIRECT_URI');
+    const tokenUrl = `${redirectUri}?${new URLSearchParams({
+      code,
+      state: stateRaw,
+      ...(this.firstQuery(query.realmId)
+        ? { realmId: this.firstQuery(query.realmId) }
+        : {}),
+    }).toString()}`;
+
+    let authResponse: any;
+    try {
+      authResponse = await oauth.createToken(tokenUrl);
+    } catch (tokenErr) {
+      try {
+        authResponse = await oauth.createToken(fullUrl);
+      } catch {
+        throw tokenErr;
+      }
+    }
     const token = authResponse.getToken();
-    const realmId = query.realmId || token.realmId;
-    if (!query.state) throw new BadRequestException('Missing OAuth state');
+    if (!token?.access_token || !token?.refresh_token) {
+      throw new BadRequestException(
+        'Intuit did not return tokens. Render QBO_ENVIRONMENT must match the Client ID tab: Development keys = sandbox, Production keys = production.',
+      );
+    }
+    const realmId = this.firstQuery(query.realmId) || token.realmId;
     if (!realmId) throw new BadRequestException('Missing QuickBooks realmId');
 
-    const state = decodeQboOAuthState(query.state);
+    const state = decodeQboOAuthState(stateRaw);
     if (!state.organizationId || !state.userId) {
       throw new BadRequestException('OAuth state is missing tenant identity');
     }

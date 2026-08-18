@@ -30,19 +30,31 @@ export class QboController {
     const returnPath = safeQboReturnPath(peekReturnPath(req.query?.state), mode);
     let frontend = resolveFrontendOrigin(returnOrigin);
     try {
-      const host = req.get('x-forwarded-host') || req.get('host');
-      const proto = req.get('x-forwarded-proto') || req.protocol;
+      const host = String(req.get('x-forwarded-host') || req.get('host') || '')
+        .split(',')[0]
+        .trim();
+      const proto = String(req.get('x-forwarded-proto') || req.protocol || 'https')
+        .split(',')[0]
+        .trim();
       const fullUrl = `${proto}://${host}${req.originalUrl}`;
       const result = await this.qbo.handleCallback(fullUrl, req.query);
       frontend = resolveFrontendOrigin(result.returnOrigin || returnOrigin);
       const path = safeQboReturnPath(result.returnPath || returnPath, result.mode || mode);
       return res.redirect(this.resumeUrl(frontend, 'connected', path));
     } catch (err: any) {
-      const raw = String(err?.error || err?.authResponse?.json?.error || err?.message || 'QBO OAuth failed');
+      const json = err?.authResponse?.json || err?.authResponse?.body || {};
+      const raw = String(
+        json.error_description ||
+          json.error ||
+          err?.error ||
+          err?.message ||
+          'QBO OAuth failed',
+      );
+      console.error('[qbo/callback] token exchange failed', raw);
       let friendly = raw;
       if (/invalid_client/i.test(raw)) {
         friendly =
-          'invalid_client: Intuit rejected the app credentials. On Render, Development keys need QBO_ENVIRONMENT=sandbox; Production keys need QBO_ENVIRONMENT=production. Also confirm QBO_CLIENT_ID / QBO_CLIENT_SECRET / Redirect URI match the Intuit Developer app exactly.';
+          'invalid_client: Intuit rejected the app credentials. Development Client ID needs QBO_ENVIRONMENT=sandbox and the Development Redirect URI. Production Client ID needs QBO_ENVIRONMENT=production and the Production Redirect URI you already set.';
       }
       return res.redirect(this.resumeUrl(frontend, 'error', returnPath, friendly));
     }
