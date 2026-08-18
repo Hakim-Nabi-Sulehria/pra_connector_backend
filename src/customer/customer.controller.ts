@@ -241,11 +241,16 @@ export class CustomerController {
   }
 
   @Get('qbo/auth-url')
-  authUrl(@Req() req: any, @Query('returnOrigin') returnOrigin?: string) {
+  authUrl(
+    @Req() req: any,
+    @Query('returnOrigin') returnOrigin?: string,
+    @Query('returnPath') returnPath?: string,
+  ) {
     const url = this.qbo.getAuthUri(
       this.orgId(req),
       req.user.id,
       returnOrigin,
+      returnPath,
     );
     return { url };
   }

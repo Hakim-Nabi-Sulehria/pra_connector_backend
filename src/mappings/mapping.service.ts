@@ -1,11 +1,13 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { MappingSection } from '@prisma/client';
+import { IntegrationMode, MappingSection } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { QboService } from '../qbo/qbo.service';
 import {
   DEFAULT_MAPPINGS,
+  FBR_DEFAULT_MAPPINGS,
   collectQboKeys,
   resolveSampleValue,
+  type DefaultMapping,
 } from './mapping.defaults';
 
 @Injectable()
@@ -15,15 +17,45 @@ export class MappingService {
     private qbo: QboService,
   ) {}
 
+  private async defaultsFor(organizationId: string): Promise<{
+    mode: IntegrationMode;
+    mappings: DefaultMapping[];
+  }> {
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { integrationMode: true },
+    });
+    const mode = org?.integrationMode || IntegrationMode.PRA;
+    return {
+      mode,
+      mappings: mode === IntegrationMode.FBR ? FBR_DEFAULT_MAPPINGS : DEFAULT_MAPPINGS,
+    };
+  }
+
   async ensureDefaults(organizationId: string) {
+    const { mappings: defaults } = await this.defaultsFor(organizationId);
     const existing = await this.prisma.fieldMapping.findMany({
       where: { organizationId },
     });
     const byKey = new Map(
       existing.map((e) => [`${e.section}:${e.targetField}`, e] as const),
     );
+    const allowed = new Set(defaults.map((m) => `${m.section}:${m.targetField}`));
 
-    const missing = DEFAULT_MAPPINGS.filter(
+    const staleIds = existing
+      .filter((e) => !allowed.has(`${e.section}:${e.targetField}`))
+      .map((e) => e.id);
+    if (staleIds.length) {
+      await this.prisma.fieldMapping.deleteMany({
+        where: { id: { in: staleIds } },
+      });
+      for (const id of staleIds) {
+        const row = existing.find((e) => e.id === id);
+        if (row) byKey.delete(`${row.section}:${row.targetField}`);
+      }
+    }
+
+    const missing = defaults.filter(
       (m) => !byKey.has(`${m.section}:${m.targetField}`),
     );
 
@@ -40,8 +72,7 @@ export class MappingService {
       });
     }
 
-    // Always re-sync sortOrder/isRequired to the canonical PRA payload sequence
-    const syncOps = DEFAULT_MAPPINGS.flatMap((m) => {
+    const syncOps = defaults.flatMap((m) => {
       const row = byKey.get(`${m.section}:${m.targetField}`);
       if (!row) return [];
       if (row.sortOrder === m.sortOrder && row.isRequired === m.isRequired) {
@@ -97,13 +128,13 @@ export class MappingService {
 
   async getWorkspace(organizationId: string, invoiceId?: string) {
     await this.ensureDefaults(organizationId);
+    const { mode, mappings: defaults } = await this.defaultsFor(organizationId);
 
-    const pra = await this.prisma.praConnection.findUnique({
-      where: { organizationId },
-    });
-    const qbo = await this.prisma.qboConnection.findUnique({
-      where: { organizationId },
-    });
+    const [pra, fbr, qbo] = await Promise.all([
+      this.prisma.praConnection.findUnique({ where: { organizationId } }),
+      this.prisma.fbrConnection.findUnique({ where: { organizationId } }),
+      this.prisma.qboConnection.findUnique({ where: { organizationId } }),
+    ]);
 
     let sampleInvoice: any = null;
     let sampleMeta: any = null;
@@ -135,7 +166,7 @@ export class MappingService {
     });
 
     const canonicalOrder = new Map(
-      DEFAULT_MAPPINGS.map((m) => [`${m.section}:${m.targetField}`, m.sortOrder]),
+      defaults.map((m) => [`${m.section}:${m.targetField}`, m.sortOrder]),
     );
     const sortedRows = [...rows].sort((a, b) => {
       const sectionCmp = String(a.section).localeCompare(String(b.section));
@@ -158,11 +189,14 @@ export class MappingService {
       value: sampleInvoice
         ? resolveSampleValue(sampleInvoice, row.sourceField, {
             posId: pra?.posId,
+            fbr,
           })
         : null,
     });
 
     return {
+      mode,
+      targetLabel: mode === IntegrationMode.FBR ? 'FBR' : 'PRA',
       connected: qbo?.status === 'CONNECTED',
       companyName: qbo?.companyName,
       sample: sampleMeta,

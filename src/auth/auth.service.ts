@@ -88,10 +88,22 @@ export class AuthService {
     const email = dto.email.toLowerCase();
     let user;
     try {
-      user = await this.prisma.user.findUnique({
-        where: { email_integrationMode: { email, integrationMode: mode } },
-        include: this.userInclude(),
-      });
+      if (expectedPortal === 'admin') {
+        user = await this.prisma.user.findFirst({
+          where: {
+            email,
+            role: Role.SUPER_ADMIN,
+            isActive: true,
+          },
+          include: this.userInclude(),
+          orderBy: { integrationMode: 'asc' },
+        });
+      } else {
+        user = await this.prisma.user.findUnique({
+          where: { email_integrationMode: { email, integrationMode: mode } },
+          include: this.userInclude(),
+        });
+      }
     } catch (err: any) {
       throw new BadRequestException(
         `Login failed because the ${mode} database schema is not ready. Wait for the backend to finish migrating, then try again. (${err?.code || err?.message || 'db error'})`,

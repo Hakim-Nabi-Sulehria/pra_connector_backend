@@ -5,7 +5,7 @@ export class AppService {
   health() {
     return {
       ok: true,
-      service: 'PRA Connector API',
+      service: 'QuickBooks Online Connector API',
       version: '1.0.0',
       timestamp: new Date().toISOString(),
     };

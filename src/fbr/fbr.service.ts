@@ -8,6 +8,11 @@ import { createHash } from 'crypto';
 import { ConnectionStatus, InvoiceSyncStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FBR_DEFAULT_BASE_URL, fbrApiPaths } from '../common/integration-mode';
+import {
+  resolveLineValue,
+  resolveSampleValue,
+  type MappingExtras,
+} from '../mappings/mapping.defaults';
 
 export type FbrDiPayload = {
   invoiceType: string;
@@ -141,7 +146,7 @@ export class FbrService {
     return { ok, fbrInvoiceNo, lineInvoiceNos, validation };
   }
 
-  /** Build a minimal DI payload from QBO invoice + org FBR setup (SN001/SN002). */
+  /** Build a DI payload from QBO invoice + org FBR setup + optional field mappings. */
   buildPayloadFromQboInvoice(
     qboInvoice: any,
     fbrConn: {
@@ -151,84 +156,112 @@ export class FbrService {
       sellerAddress: string | null;
     },
     scenarioId: 'SN001' | 'SN002',
+    mappings?: Array<{ section: string; targetField: string; sourceField: string }>,
   ): FbrDiPayload {
+    const extras: MappingExtras = { fbr: fbrConn, scenarioId };
+    const headerMap = new Map(
+      (mappings || [])
+        .filter((m) => m.section === 'HEADER')
+        .map((m) => [m.targetField, m.sourceField]),
+    );
+    const lineMap = new Map(
+      (mappings || [])
+        .filter((m) => m.section === 'LINE')
+        .map((m) => [m.targetField, m.sourceField]),
+    );
+
+    const header = (key: string, fallback: any = '') => {
+      const source = headerMap.get(key);
+      if (!source) return fallback;
+      const value = resolveSampleValue(qboInvoice, source, extras);
+      return value == null || value === '' ? fallback : value;
+    };
+
     const customer = qboInvoice?.CustomerRef?.name || 'Customer';
     const buyerReg =
       scenarioId === 'SN001' ? 'Registered' : 'Unregistered';
     const buyerNtn =
       scenarioId === 'SN001'
-        ? qboInvoice?.CustomerMemo?.value?.slice(0, 13) || '3740558449617'
-        : '1000000000000';
+        ? String(
+            header('buyerNTNCNIC', qboInvoice?.CustomerMemo?.value || ''),
+          ).slice(0, 13) || '3740558449617'
+        : String(header('buyerNTNCNIC', '1000000000000') || '1000000000000');
 
     const lines = (qboInvoice?.Line || []).filter(
       (l: any) => l.DetailType === 'SalesItemLineDetail',
     );
+
+    const itemFromLine = (line: any) => {
+      const qty = Number(line.SalesItemLineDetail?.Qty || 1);
+      const unitPrice = Number(line.SalesItemLineDetail?.UnitPrice || 0);
+      const valueExTax = qty * unitPrice || Number(line.Amount || 0);
+      const rateRaw = resolveLineValue(qboInvoice, line, lineMap.get('rate') || '', extras);
+      const taxPct = Number(String(rateRaw || '18').replace('%', '')) || 18;
+      const salesTax =
+        Number(
+          resolveLineValue(
+            qboInvoice,
+            line,
+            lineMap.get('salesTaxApplicable') || '',
+            extras,
+          ),
+        ) || valueExTax * (taxPct / 100);
+      const mapped = (key: string, fallback: any) => {
+        const source = lineMap.get(key);
+        if (!source) return fallback;
+        const value = resolveLineValue(qboInvoice, line, source, extras);
+        return value == null || value === '' ? fallback : value;
+      };
+
+      return {
+        hsCode: String(mapped('hsCode', '8478.9000')),
+        productDescription: String(
+          mapped('productDescription', line.Description || line.SalesItemLineDetail?.ItemRef?.name || 'Inventory'),
+        ),
+        rate: String(mapped('rate', `${taxPct}%`)),
+        uoM: String(mapped('uoM', 'Numbers, pieces, units')),
+        quantity: Number(mapped('quantity', qty)),
+        totalValues: Number(mapped('totalValues', valueExTax + salesTax)),
+        valueSalesExcludingST: Number(mapped('valueSalesExcludingST', valueExTax)),
+        fixedNotifiedValueOrRetailPrice: Number(mapped('fixedNotifiedValueOrRetailPrice', 0)),
+        salesTaxApplicable: Number(mapped('salesTaxApplicable', salesTax)),
+        salesTaxWithheldAtSource: Number(mapped('salesTaxWithheldAtSource', 0)),
+        extraTax: Number(mapped('extraTax', 0)),
+        furtherTax: Number(mapped('furtherTax', 0)),
+        sroScheduleNo: String(mapped('sroScheduleNo', '')),
+        fedPayable: Number(mapped('fedPayable', 0)),
+        discount: Number(mapped('discount', 0)),
+        saleType: String(mapped('saleType', 'Goods at standard rate (default)')),
+        sroItemSerialNo: String(mapped('sroItemSerialNo', '')),
+      };
+    };
+
     const items = lines.length
-      ? lines.map((line: any) => {
-          const qty = Number(line.SalesItemLineDetail?.Qty || 1);
-          const unitPrice = Number(line.SalesItemLineDetail?.UnitPrice || 0);
-          const valueExTax = qty * unitPrice;
-          const tax = Number(line.SalesItemLineDetail?.TaxCodeRef ? 0 : 0);
-          const salesTax = valueExTax * 0.18;
-          const total = valueExTax + salesTax;
-          return {
-            hsCode: '8478.9000',
-            productDescription: line.Description || 'Inventory',
-            rate: '18%',
-            uoM: 'KG',
-            quantity: qty,
-            totalValues: total,
-            valueSalesExcludingST: valueExTax,
-            fixedNotifiedValueOrRetailPrice: 0.0,
-            salesTaxApplicable: salesTax,
-            salesTaxWithheldAtSource: 0.0,
-            extraTax: 0.0,
-            furtherTax: 0.0,
-            sroScheduleNo: '',
-            fedPayable: 0.0,
-            discount: 0.0,
-            saleType: 'Goods at standard rate (default)',
-            sroItemSerialNo: '',
-          };
-        })
-      : [
-          {
-            hsCode: '8478.9000',
-            productDescription: 'Inventory',
-            rate: '18%',
-            uoM: 'KG',
-            quantity: 1.0,
-            totalValues: 1180.0,
-            valueSalesExcludingST: 1000.0,
-            fixedNotifiedValueOrRetailPrice: 0.0,
-            salesTaxApplicable: 180.0,
-            salesTaxWithheldAtSource: 0.0,
-            extraTax: 0.0,
-            furtherTax: 0.0,
-            sroScheduleNo: '',
-            fedPayable: 0.0,
-            discount: 0.0,
-            saleType: 'Goods at standard rate (default)',
-            sroItemSerialNo: '',
-          },
-        ];
+      ? lines.map(itemFromLine)
+      : [itemFromLine({ SalesItemLineDetail: { Qty: 1, UnitPrice: 1000 }, Amount: 1000, Description: 'Inventory' })];
 
     const txnDate = qboInvoice?.TxnDate || new Date().toISOString().slice(0, 10);
+    const billAddr = [
+      qboInvoice?.BillAddr?.Line1,
+      qboInvoice?.BillAddr?.City,
+    ]
+      .filter(Boolean)
+      .join(', ');
 
     return {
-      invoiceType: 'Sale Invoice',
-      invoiceDate: txnDate,
-      sellerNTNCNIC: fbrConn.sellerNTNCNIC || '',
-      sellerBusinessName: fbrConn.sellerBusinessName || '',
-      sellerProvince: fbrConn.sellerProvince || '',
-      sellerAddress: fbrConn.sellerAddress || '',
+      invoiceType: String(header('invoiceType', 'Sale Invoice')),
+      invoiceDate: String(header('invoiceDate', txnDate)),
+      sellerNTNCNIC: String(header('sellerNTNCNIC', fbrConn.sellerNTNCNIC || '')),
+      sellerBusinessName: String(header('sellerBusinessName', fbrConn.sellerBusinessName || '')),
+      sellerProvince: String(header('sellerProvince', fbrConn.sellerProvince || '')),
+      sellerAddress: String(header('sellerAddress', fbrConn.sellerAddress || '')),
       buyerNTNCNIC: buyerNtn,
-      buyerBusinessName: customer,
-      buyerProvince: 'SINDH',
-      buyerAddress: 'KARACHI',
-      buyerRegistrationType: buyerReg,
-      invoiceRefNo: '',
-      scenarioId,
+      buyerBusinessName: String(header('buyerBusinessName', customer)),
+      buyerProvince: String(header('buyerProvince', qboInvoice?.BillAddr?.CountrySubDivisionCode || 'SINDH')),
+      buyerAddress: String(header('buyerAddress', billAddr || 'KARACHI')),
+      buyerRegistrationType: String(header('buyerRegistrationType', buyerReg)),
+      invoiceRefNo: String(header('invoiceRefNo', qboInvoice?.DocNumber || '')),
+      scenarioId: String(header('scenarioId', scenarioId)),
       items,
     };
   }

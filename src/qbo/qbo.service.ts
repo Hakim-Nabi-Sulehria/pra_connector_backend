@@ -61,7 +61,12 @@ export class QboService {
     return `${this.baseUrl()}/v3/company/${realmId}/invoice?minorversion=75&include=enhancedAllCustomFields`;
   }
 
-  getAuthUri(organizationId: string, userId: string, returnOrigin?: string) {
+  getAuthUri(
+    organizationId: string,
+    userId: string,
+    returnOrigin?: string,
+    returnPath?: string,
+  ) {
     if (!organizationId || !userId) {
       throw new BadRequestException('Organization and user are required for QBO connect');
     }
@@ -70,6 +75,7 @@ export class QboService {
       organizationId,
       userId,
       returnOrigin: returnOrigin || null,
+      returnPath: returnPath || null,
       t: Date.now(),
     });
     return oauth.authorizeUri({
@@ -172,7 +178,7 @@ export class QboService {
       },
     });
 
-    return { qbo, returnOrigin: state.returnOrigin };
+    return { qbo, returnOrigin: state.returnOrigin, returnPath: state.returnPath };
   }
 
   private async ensureTokens(organizationId: string) {

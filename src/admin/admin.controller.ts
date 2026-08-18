@@ -17,6 +17,7 @@ import { JwtAuthGuard, Roles, RolesGuard } from '../common/guards';
 import { CreateCompanyDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
 import {
   FBR_DEFAULT_BASE_URL,
+  parseIntegrationMode,
   sanitizeFbr,
 } from '../common/integration-mode';
 
@@ -24,6 +25,10 @@ function defaultPraUrl(environment: string) {
   return environment === 'production'
     ? 'https://ims.pral.com.pk/ims/production/api/Live/PostData'
     : 'https://ims.pral.com.pk/ims/sandbox/api/Live/PostData';
+}
+
+function defaultFbrUrl(_environment: string) {
+  return FBR_DEFAULT_BASE_URL;
 }
 
 function sanitizePra<T extends { apiToken?: string | null } | null | undefined>(pra: T) {
@@ -57,6 +62,10 @@ export class AdminController {
   constructor(private prisma: PrismaService) {}
 
   private adminMode(req: any): IntegrationMode {
+    const header = (req.headers?.['x-integration-mode'] as string) || '';
+    if (req.user?.role === Role.SUPER_ADMIN && header) {
+      return parseIntegrationMode(header);
+    }
     return req.user?.integrationMode || IntegrationMode.PRA;
   }
 
@@ -250,6 +259,21 @@ export class AdminController {
         ...this.companyInclude(),
         branches: true,
         invoices: { take: 10, orderBy: { createdAt: 'desc' } },
+        fbrInvoices: {
+          take: 8,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            qboInvoiceId: true,
+            fbrInvoiceNo: true,
+            status: true,
+            totalAmount: true,
+            customerName: true,
+            postedAt: true,
+            createdAt: true,
+            errorMessage: true,
+          },
+        },
       },
     });
     if (!org) throw new BadRequestException('Company not found');
@@ -285,7 +309,7 @@ export class AdminController {
         base.fbr = {
           create: {
             environment,
-            apiBaseUrl: FBR_DEFAULT_BASE_URL,
+            apiBaseUrl: dto.fbrApiUrl?.trim() || defaultFbrUrl(environment),
             sellerNTNCNIC: dto.sellerNTNCNIC?.trim() || null,
             sellerBusinessName: dto.sellerBusinessName?.trim() || companyName,
             sellerProvince: dto.sellerProvince?.trim() || null,
@@ -397,7 +421,7 @@ export class AdminController {
           create: {
             organizationId: id,
             environment,
-            apiBaseUrl: FBR_DEFAULT_BASE_URL,
+            apiBaseUrl: dto.fbrApiUrl?.trim() || defaultFbrUrl(environment),
             sellerNTNCNIC: dto.sellerNTNCNIC?.trim() || org.fbr?.sellerNTNCNIC || null,
             sellerBusinessName:
               dto.sellerBusinessName?.trim() || org.fbr?.sellerBusinessName || org.name,
@@ -408,6 +432,8 @@ export class AdminController {
           },
           update: {
             environment,
+            apiBaseUrl:
+              dto.fbrApiUrl?.trim() || org.fbr?.apiBaseUrl || defaultFbrUrl(environment),
             sellerNTNCNIC: dto.sellerNTNCNIC?.trim() || org.fbr?.sellerNTNCNIC || null,
             sellerBusinessName:
               dto.sellerBusinessName?.trim() || org.fbr?.sellerBusinessName || org.name,

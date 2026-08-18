@@ -42,6 +42,10 @@ export class CreateCompanyDto {
   @IsOptional()
   @IsString()
   fbrToken?: string;
+
+  @IsOptional()
+  @IsString()
+  fbrApiUrl?: string;
 }
 
 export class UpdateCompanyDto {
@@ -90,6 +94,10 @@ export class UpdateCompanyDto {
   @IsOptional()
   @IsString()
   fbrToken?: string;
+
+  @IsOptional()
+  @IsString()
+  fbrApiUrl?: string;
 }
 
 export class UpdateQboConfigDto {

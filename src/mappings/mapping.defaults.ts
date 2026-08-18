@@ -44,9 +44,55 @@ export const DEFAULT_MAPPINGS: DefaultMapping[] = [
   { section: 'LINE', targetField: 'RefUSIN', sourceField: '', isRequired: false, sortOrder: 11 },
 ];
 
+/** FBR DI Sale Invoice — header + items[] (more fields than PRA). */
+export const FBR_DEFAULT_MAPPINGS: DefaultMapping[] = [
+  { section: 'HEADER', targetField: 'invoiceType', sourceField: 'derived.FbrInvoiceType', isRequired: true, sortOrder: 0 },
+  { section: 'HEADER', targetField: 'invoiceDate', sourceField: 'TxnDate', isRequired: true, sortOrder: 1 },
+  { section: 'HEADER', targetField: 'sellerNTNCNIC', sourceField: 'fbr.sellerNTNCNIC', isRequired: true, sortOrder: 2 },
+  { section: 'HEADER', targetField: 'sellerBusinessName', sourceField: 'fbr.sellerBusinessName', isRequired: true, sortOrder: 3 },
+  { section: 'HEADER', targetField: 'sellerProvince', sourceField: 'fbr.sellerProvince', isRequired: true, sortOrder: 4 },
+  { section: 'HEADER', targetField: 'sellerAddress', sourceField: 'fbr.sellerAddress', isRequired: true, sortOrder: 5 },
+  { section: 'HEADER', targetField: 'buyerNTNCNIC', sourceField: 'Customer.PrimaryTaxIdentifier', isRequired: false, sortOrder: 6 },
+  { section: 'HEADER', targetField: 'buyerBusinessName', sourceField: 'CustomerRef.name', isRequired: true, sortOrder: 7 },
+  { section: 'HEADER', targetField: 'buyerProvince', sourceField: 'BillAddr.CountrySubDivisionCode', isRequired: true, sortOrder: 8 },
+  { section: 'HEADER', targetField: 'buyerAddress', sourceField: 'BillAddr.Line1', isRequired: true, sortOrder: 9 },
+  { section: 'HEADER', targetField: 'buyerRegistrationType', sourceField: 'derived.BuyerRegistrationType', isRequired: true, sortOrder: 10 },
+  { section: 'HEADER', targetField: 'invoiceRefNo', sourceField: 'DocNumber', isRequired: false, sortOrder: 11 },
+  { section: 'HEADER', targetField: 'scenarioId', sourceField: 'derived.ScenarioId', isRequired: true, sortOrder: 12 },
+
+  { section: 'LINE', targetField: 'hsCode', sourceField: 'CustomField.HS Code', isRequired: true, sortOrder: 0 },
+  { section: 'LINE', targetField: 'productDescription', sourceField: 'Line.Description', isRequired: true, sortOrder: 1 },
+  { section: 'LINE', targetField: 'rate', sourceField: 'derived.FbrTaxRate', isRequired: true, sortOrder: 2 },
+  { section: 'LINE', targetField: 'uoM', sourceField: 'derived.FbrUom', isRequired: true, sortOrder: 3 },
+  { section: 'LINE', targetField: 'quantity', sourceField: 'Line.SalesItemLineDetail.Qty', isRequired: true, sortOrder: 4 },
+  { section: 'LINE', targetField: 'valueSalesExcludingST', sourceField: 'Line.Amount', isRequired: true, sortOrder: 5 },
+  { section: 'LINE', targetField: 'salesTaxApplicable', sourceField: 'derived.LineTaxCharged', isRequired: true, sortOrder: 6 },
+  { section: 'LINE', targetField: 'totalValues', sourceField: 'derived.LineTotalAmount', isRequired: true, sortOrder: 7 },
+  { section: 'LINE', targetField: 'fixedNotifiedValueOrRetailPrice', sourceField: '', isRequired: false, sortOrder: 8 },
+  { section: 'LINE', targetField: 'salesTaxWithheldAtSource', sourceField: '', isRequired: false, sortOrder: 9 },
+  { section: 'LINE', targetField: 'extraTax', sourceField: '', isRequired: false, sortOrder: 10 },
+  { section: 'LINE', targetField: 'furtherTax', sourceField: '', isRequired: false, sortOrder: 11 },
+  { section: 'LINE', targetField: 'sroScheduleNo', sourceField: '', isRequired: false, sortOrder: 12 },
+  { section: 'LINE', targetField: 'fedPayable', sourceField: '', isRequired: false, sortOrder: 13 },
+  { section: 'LINE', targetField: 'discount', sourceField: '', isRequired: false, sortOrder: 14 },
+  { section: 'LINE', targetField: 'saleType', sourceField: 'derived.FbrSaleType', isRequired: true, sortOrder: 15 },
+  { section: 'LINE', targetField: 'sroItemSerialNo', sourceField: '', isRequired: false, sortOrder: 16 },
+];
+
+export type MappingExtras = {
+  posId?: string | null;
+  fbr?: {
+    sellerNTNCNIC?: string | null;
+    sellerBusinessName?: string | null;
+    sellerProvince?: string | null;
+    sellerAddress?: string | null;
+  } | null;
+  scenarioId?: string | null;
+};
+
 export function getByPath(obj: any, path: string): any {
   if (!path || !obj) return null;
-  if (path.startsWith('derived.') || path.startsWith('pra.') || path.startsWith('custom.')) {
+  if (path.startsWith('derived.') || path.startsWith('pra.') || path.startsWith('fbr.') || path.startsWith('custom.')) {
     return null; // resolved separately
   }
   const parts = path.split('.');
@@ -71,12 +117,29 @@ export function getByPath(obj: any, path: string): any {
 export function resolveSampleValue(
   invoice: any,
   sourceField: string,
-  extras?: { posId?: string | null },
+  extras?: MappingExtras,
 ): any {
   if (!sourceField) return null;
   if (sourceField === 'pra.posId') return extras?.posId ?? null;
+  if (sourceField === 'fbr.sellerNTNCNIC') return extras?.fbr?.sellerNTNCNIC ?? null;
+  if (sourceField === 'fbr.sellerBusinessName') return extras?.fbr?.sellerBusinessName ?? null;
+  if (sourceField === 'fbr.sellerProvince') return extras?.fbr?.sellerProvince ?? null;
+  if (sourceField === 'fbr.sellerAddress') return extras?.fbr?.sellerAddress ?? null;
   if (sourceField === 'derived.PaymentMode') return 1;
   if (sourceField === 'derived.InvoiceType') return 1;
+  if (sourceField === 'derived.FbrInvoiceType') return 'Sale Invoice';
+  if (sourceField === 'derived.FbrTaxRate') {
+    const pct =
+      Number(invoice?.TxnTaxDetail?.TaxLine?.[0]?.TaxLineDetail?.TaxPercent) || 18;
+    return `${pct}%`;
+  }
+  if (sourceField === 'derived.FbrUom') return 'Numbers, pieces, units';
+  if (sourceField === 'derived.FbrSaleType') return 'Goods at standard rate (default)';
+  if (sourceField === 'derived.ScenarioId') return extras?.scenarioId || 'SN001';
+  if (sourceField === 'derived.BuyerRegistrationType') {
+    const ntn = invoice?.Customer?.PrimaryTaxIdentifier || invoice?.CustomerMemo?.value;
+    return ntn ? 'Registered' : 'Unregistered';
+  }
   if (sourceField === 'derived.TotalQuantity') {
     const lines = (invoice?.Line || []).filter(
       (l: any) => l.DetailType === 'SalesItemLineDetail',
@@ -176,6 +239,20 @@ export function collectQboKeys(invoice: any): string[] {
     'derived.LineTotalAmount',
     'pra.posId',
     'custom.PCTCode',
+    'fbr.sellerNTNCNIC',
+    'fbr.sellerBusinessName',
+    'fbr.sellerProvince',
+    'fbr.sellerAddress',
+    'derived.FbrInvoiceType',
+    'derived.FbrTaxRate',
+    'derived.FbrUom',
+    'derived.FbrSaleType',
+    'derived.BuyerRegistrationType',
+    'derived.ScenarioId',
+    'Customer.PrimaryTaxIdentifier',
+    'BillAddr.CountrySubDivisionCode',
+    'BillAddr.City',
+    'Line.Description',
     '',
   ]);
 
@@ -195,4 +272,19 @@ export function collectQboKeys(invoice: any): string[] {
 
   if (invoice?.DocNumber != null) keys.add('DocNumber');
   return Array.from(keys);
+}
+
+/** Resolve a mapping against a specific sales line (FBR items[]). */
+export function resolveLineValue(
+  invoice: any,
+  line: any,
+  sourceField: string,
+  extras?: MappingExtras,
+): any {
+  if (!sourceField) return null;
+  const scoped = {
+    ...invoice,
+    Line: line ? [{ ...line, DetailType: line.DetailType || 'SalesItemLineDetail' }] : invoice?.Line,
+  };
+  return resolveSampleValue(scoped, sourceField, extras);
 }

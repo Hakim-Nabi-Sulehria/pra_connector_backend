@@ -117,10 +117,104 @@ async function main() {
     },
   });
 
+  const praTestEmail = 'pratestuser@qboconnector.com';
+  const praTestPass = 'Pratest@12345';
+  const fbrTestEmail = 'fbrtestuser@qboconnector.com';
+  const fbrTestPass = 'Fbrtest@12345';
+  const praTestHash = await bcrypt.hash(praTestPass, 10);
+  const fbrTestHash = await bcrypt.hash(fbrTestPass, 10);
+
+  const praTestOrg = await prisma.organization.upsert({
+    where: { id: 'seed-pra-test-org' },
+    update: { name: 'PRA Test Workspace', isActive: true, integrationMode: IntegrationMode.PRA },
+    create: {
+      id: 'seed-pra-test-org',
+      name: 'PRA Test Workspace',
+      legalName: 'PRA Test Workspace',
+      industry: 'Testing',
+      integrationMode: IntegrationMode.PRA,
+      qbo: { create: { status: 'DISCONNECTED' } },
+      pra: { create: { environment: 'sandbox', status: 'DISCONNECTED' } },
+      branches: {
+        create: [{ name: 'Head Office', city: 'Lahore', isDefault: true }],
+      },
+    },
+  });
+
+  await prisma.user.upsert({
+    where: {
+      email_integrationMode: { email: praTestEmail, integrationMode: IntegrationMode.PRA },
+    },
+    update: {
+      passwordHash: praTestHash,
+      organizationId: praTestOrg.id,
+      role: Role.CUSTOMER_ADMIN,
+      isActive: true,
+      fullName: 'PRA Test User',
+    },
+    create: {
+      email: praTestEmail,
+      passwordHash: praTestHash,
+      fullName: 'PRA Test User',
+      role: Role.CUSTOMER_ADMIN,
+      integrationMode: IntegrationMode.PRA,
+      organizationId: praTestOrg.id,
+    },
+  });
+
+  const fbrTestOrg = await prisma.organization.upsert({
+    where: { id: 'seed-fbr-test-org' },
+    update: { name: 'FBR Test Workspace', isActive: true, integrationMode: IntegrationMode.FBR },
+    create: {
+      id: 'seed-fbr-test-org',
+      name: 'FBR Test Workspace',
+      legalName: 'FBR TEST SELLER',
+      pntn: '2472833',
+      industry: 'Testing',
+      integrationMode: IntegrationMode.FBR,
+      qbo: { create: { status: 'DISCONNECTED' } },
+      fbr: {
+        create: {
+          environment: 'sandbox',
+          status: 'DISCONNECTED',
+          sellerNTNCNIC: '2472833',
+          sellerBusinessName: 'FBR TEST SELLER',
+          sellerProvince: 'CAPITAL TERRITORY',
+          sellerAddress: 'ISLAMABAD',
+          apiBaseUrl: 'https://gw.fbr.gov.pk',
+        },
+      },
+      branches: {
+        create: [{ name: 'Head Office', city: 'Islamabad', isDefault: true }],
+      },
+    },
+  });
+
+  await prisma.user.upsert({
+    where: {
+      email_integrationMode: { email: fbrTestEmail, integrationMode: IntegrationMode.FBR },
+    },
+    update: {
+      passwordHash: fbrTestHash,
+      organizationId: fbrTestOrg.id,
+      role: Role.CUSTOMER_ADMIN,
+      isActive: true,
+      fullName: 'FBR Test User',
+    },
+    create: {
+      email: fbrTestEmail,
+      passwordHash: fbrTestHash,
+      fullName: 'FBR Test User',
+      role: Role.CUSTOMER_ADMIN,
+      integrationMode: IntegrationMode.FBR,
+      organizationId: fbrTestOrg.id,
+    },
+  });
+
   console.log('Seed complete');
   console.log(`Super Admin (PRA & FBR): ${adminEmail} / ${adminPass}`);
-  console.log(`Customer PRA: ${demoEmail} / ${demoPass}`);
-  console.log(`Customer FBR: ${demoEmail} / ${demoPass} (select FBR tab on login)`);
+  console.log(`PRA test user: ${praTestEmail} / ${praTestPass} (PRA tab)`);
+  console.log(`FBR test user: ${fbrTestEmail} / ${fbrTestPass} (FBR tab)`);
 }
 
 main()

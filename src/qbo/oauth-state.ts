@@ -5,6 +5,7 @@ export type QboOAuthState = {
   organizationId: string;
   userId: string;
   returnOrigin?: string | null;
+  returnPath?: string | null;
   t: number;
 };
 
@@ -69,4 +70,20 @@ export function peekReturnOrigin(raw?: string): string | null {
   } catch {
     return null;
   }
+}
+
+export function peekReturnPath(raw?: string): string | null {
+  if (!raw) return null;
+  try {
+    return decodeQboOAuthState(raw).returnPath || null;
+  } catch {
+    return null;
+  }
+}
+
+export function safeQboReturnPath(path?: string | null) {
+  const raw = String(path || '').split('?')[0];
+  if (raw.startsWith('/fbr/app')) return raw;
+  if (raw.startsWith('/app')) return raw;
+  return '/app/connections';
 }
