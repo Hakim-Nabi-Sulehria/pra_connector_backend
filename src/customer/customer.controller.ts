@@ -18,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/guards';
 import { QboService } from '../qbo/qbo.service';
 import { MappingService } from '../mappings/mapping.service';
+import { PraService, type InvoiceDraft } from '../pra/pra.service';
 
 class CreateBranchDto {
   @IsString()
@@ -87,6 +88,48 @@ class UpdateQboCustomFieldDto {
   value!: string;
 }
 
+class SaveInvoiceDraftDto {
+  @IsString()
+  qboInvoiceId!: string;
+
+  @IsOptional()
+  header?: Record<string, unknown>;
+
+  @IsOptional()
+  customer?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsArray()
+  lines?: Array<Record<string, unknown>>;
+
+  @IsOptional()
+  totals?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsString()
+  usin?: string;
+
+  @IsOptional()
+  @IsString()
+  customerName?: string;
+
+  @IsOptional()
+  @IsNumber()
+  totalAmount?: number;
+}
+
+class PostPraDto {
+  @IsString()
+  qboInvoiceId!: string;
+
+  @IsOptional()
+  writeToQbo?: boolean;
+
+  @IsOptional()
+  @IsString()
+  qboCustomFieldName?: string;
+}
+
 class AttachFiscalDto {
   @IsString()
   qboInvoiceId!: string;
@@ -125,6 +168,7 @@ export class CustomerController {
     private prisma: PrismaService,
     private qbo: QboService,
     private mappingService: MappingService,
+    private praService: PraService,
   ) {}
 
   private orgId(req: any) {
@@ -409,6 +453,71 @@ export class CustomerController {
       orderBy: { createdAt: 'desc' },
       take: 50,
     });
+  }
+
+  @Get('invoices/:qboInvoiceId')
+  async invoiceByQboId(@Req() req: any, @Param('qboInvoiceId') qboInvoiceId: string) {
+    const organizationId = this.orgId(req);
+    const row = await this.prisma.invoiceSync.findUnique({
+      where: {
+        organizationId_qboInvoiceId: { organizationId, qboInvoiceId },
+      },
+    });
+    return row || { qboInvoiceId, status: 'PENDING', praPayload: null };
+  }
+
+  @Patch('invoices/:qboInvoiceId/draft')
+  async saveInvoiceDraft(
+    @Req() req: any,
+    @Param('qboInvoiceId') qboInvoiceId: string,
+    @Body() dto: SaveInvoiceDraftDto,
+  ) {
+    const organizationId = this.orgId(req);
+    const draft: InvoiceDraft = {
+      header: dto.header,
+      customer: dto.customer,
+      lines: dto.lines,
+      totals: dto.totals,
+    };
+    const row = await this.praService.saveDraft(organizationId, qboInvoiceId, draft, {
+      usin: dto.usin,
+      customerName: dto.customerName,
+      totalAmount: dto.totalAmount,
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId,
+        userId: req.user.id,
+        action: 'INVOICE_DRAFT_SAVE',
+        entity: 'InvoiceSync',
+        meta: { qboInvoiceId },
+      },
+    });
+    return row;
+  }
+
+  @Post('invoices/post-pra')
+  async postToPra(@Req() req: any, @Body() dto: PostPraDto) {
+    const organizationId = this.orgId(req);
+    const result = await this.praService.postInvoice(organizationId, dto.qboInvoiceId, {
+      writeToQbo: dto.writeToQbo,
+      qboCustomFieldName: dto.qboCustomFieldName,
+    });
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId,
+        userId: req.user.id,
+        action: 'INVOICE_POST_PRA',
+        entity: 'InvoiceSync',
+        meta: {
+          qboInvoiceId: dto.qboInvoiceId,
+          fiscalInvoiceNo: result.fiscalInvoiceNo,
+          praCode: (result as any).praCode,
+          qboWriteOk: result.qboWriteVerified,
+        },
+      },
+    });
+    return result;
   }
 
   @Post('invoices/attach-fiscal')
