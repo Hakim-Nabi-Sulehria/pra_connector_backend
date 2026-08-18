@@ -383,9 +383,7 @@ export class PraService {
     } catch (err: any) {
       this.logger.error(`PRA PostData transport error: ${err.message}`);
       const hint =
-        conn.environment === 'production'
-          ? ' Production PRA requires your server outbound IP to be whitelisted with PRA (eims@pra.punjab.gov.pk).'
-          : '';
+        ' If connections reset (ECONNRESET), ask PRA to whitelist your Render outbound IP at eims@pra.punjab.gov.pk (see GET /api/health/pra-tls for serverOutboundIp). Optional: set PRA_HTTPS_PROXY to use an HTTPS egress proxy.';
       throw new BadRequestException(
         `PRA PostData request failed: ${err.message}.${hint}`,
       );

@@ -1,5 +1,6 @@
 import * as dns from 'dns';
 import * as https from 'https';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import { URL } from 'url';
 
 /** Prefer IPv4 — Render/Node happy-eyeballs can fail on some routes to ims.pral.com.pk */
@@ -35,6 +36,7 @@ export function isRetryablePraNetworkError(err: unknown): boolean {
   if (code && RETRYABLE_CODES.has(code)) return true;
   const message = String((err as Error).message || '');
   return (
+    message.includes('read ECONNRESET') ||
     message.includes('Client network socket disconnected') ||
     message.includes('socket hang up') ||
     message.includes('network socket disconnected') ||
@@ -42,22 +44,34 @@ export function isRetryablePraNetworkError(err: unknown): boolean {
   );
 }
 
+function praTlsOptions(hostname: string) {
+  const strictTls = process.env.PRA_TLS_REJECT_UNAUTHORIZED === 'true';
+  return {
+    keepAlive: true,
+    family: 4,
+    lookup: ipv4Lookup as any,
+    minVersion: 'TLSv1.2' as const,
+    maxVersion: 'TLSv1.2' as const,
+    servername: hostname,
+    rejectUnauthorized: strictTls,
+    ciphers: 'DEFAULT:@SECLEVEL=0',
+  };
+}
+
 /**
  * Dedicated agent for PRA IMS. Official PRA samples disable certificate
  * validation; Render also needs IPv4-only lookup for ims.pral.com.pk.
  */
 export function createPraHttpsAgent(hostname = 'ims.pral.com.pk'): https.Agent {
-  const strictTls = process.env.PRA_TLS_REJECT_UNAUTHORIZED === 'true';
-  return new https.Agent({
-    keepAlive: true,
-    family: 4,
-    lookup: ipv4Lookup as any,
-    minVersion: 'TLSv1.2',
-    maxVersion: 'TLSv1.2',
-    servername: hostname,
-    rejectUnauthorized: strictTls,
-    ciphers: 'DEFAULT:@SECLEVEL=0',
-  });
+  return new https.Agent(praTlsOptions(hostname));
+}
+
+function getPraRequestAgent(hostname: string): https.Agent {
+  const proxyUrl = process.env.PRA_HTTPS_PROXY?.trim();
+  if (proxyUrl) {
+    return new HttpsProxyAgent(proxyUrl, praTlsOptions(hostname)) as unknown as https.Agent;
+  }
+  return createPraHttpsAgent(hostname);
 }
 
 function parseResponseBody(raw: string): unknown {
@@ -89,7 +103,8 @@ function nativeHttpsPost<T = unknown>(
     const hostname = parsed.hostname;
     const sniHost = hostname;
     const requestHost = connectHost || hostname;
-    const agent = createPraHttpsAgent(sniHost);
+    const viaProxy = Boolean(process.env.PRA_HTTPS_PROXY?.trim());
+    const agent = getPraRequestAgent(sniHost);
     const req = https.request(
       {
         protocol: parsed.protocol,
@@ -103,9 +118,10 @@ function nativeHttpsPost<T = unknown>(
           'Content-Length': Buffer.byteLength(payload),
         },
         agent,
-        lookup: connectHost
-          ? (_host: string, _opts: dns.LookupOptions, cb: any) => cb(null, connectHost, 4)
-          : (ipv4Lookup as any),
+        lookup:
+          !viaProxy && connectHost
+            ? (_host: string, _opts: dns.LookupOptions, cb: any) => cb(null, connectHost, 4)
+            : (ipv4Lookup as any),
         minVersion: 'TLSv1.2',
         maxVersion: 'TLSv1.2',
         servername: sniHost,
@@ -144,6 +160,7 @@ export async function praHttpPost<T = unknown>(
   const timeoutMs = options?.timeoutMs ?? 90000;
   const retries = options?.retries ?? 5;
   const hostname = new URL(url).hostname;
+  const viaProxy = Boolean(process.env.PRA_HTTPS_PROXY?.trim());
 
   let resolvedIp: string | undefined;
   try {
@@ -159,7 +176,7 @@ export async function praHttpPost<T = unknown>(
 
   let lastError: unknown;
   for (let attempt = 0; attempt < retries; attempt++) {
-    const useDirectIp = attempt > 0 && resolvedIp;
+    const useDirectIp = !viaProxy && attempt > 0 && resolvedIp;
     try {
       return await nativeHttpsPost<T>(
         url,
