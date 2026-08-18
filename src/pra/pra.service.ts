@@ -373,6 +373,7 @@ export class PraService {
         Authorization: `Bearer ${conn.apiToken}`,
         Accept: 'application/json',
         'Content-Type': 'application/json',
+        'User-Agent': 'PRA-QBO-Connector/1.0',
       });
       return {
         httpStatus: res.httpStatus,
