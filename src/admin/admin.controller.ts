@@ -321,9 +321,11 @@ export class AdminController {
       } else {
         const apiUrl = dto.praApiUrl?.trim() || defaultPraUrl(environment);
         const apiToken = dto.praToken?.trim() || null;
+        const posId = dto.posId?.trim() || null;
         base.pra = {
           create: {
             environment,
+            posId,
             apiUrl,
             apiToken,
             status: apiToken ? ConnectionStatus.CONNECTED : ConnectionStatus.DISCONNECTED,
@@ -448,6 +450,10 @@ export class AdminController {
           dto.praApiUrl?.trim() ||
           org.pra?.apiUrl ||
           defaultPraUrl(environment);
+        const posId =
+          dto.posId !== undefined
+            ? dto.posId.trim() || null
+            : org.pra?.posId || null;
         const apiToken =
           dto.praToken !== undefined && dto.praToken.trim() !== ''
             ? dto.praToken.trim()
@@ -460,12 +466,14 @@ export class AdminController {
           create: {
             organizationId: id,
             environment,
+            posId,
             apiUrl,
             apiToken,
             status: praStatus,
           },
           update: {
             environment,
+            posId,
             apiUrl,
             apiToken,
             status: praStatus,

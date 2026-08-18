@@ -19,6 +19,10 @@ export class CreateCompanyDto {
   @IsString()
   praToken?: string;
 
+  @IsOptional()
+  @IsString()
+  posId?: string;
+
   @IsIn(['sandbox', 'production'])
   environment!: string;
 
@@ -70,6 +74,10 @@ export class UpdateCompanyDto {
   @IsOptional()
   @IsString()
   praToken?: string;
+
+  @IsOptional()
+  @IsString()
+  posId?: string;
 
   @IsOptional()
   @IsIn(['sandbox', 'production'])
