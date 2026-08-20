@@ -14,7 +14,7 @@ import * as bcrypt from 'bcrypt';
 import { ConnectionStatus, IntegrationMode, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/guards';
-import { CreateCompanyDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
+import { CreateCompanyDto, ResetDataDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
 import {
   FBR_DEFAULT_BASE_URL,
   parseIntegrationMode,
@@ -677,5 +677,31 @@ export class AdminController {
     });
 
     return { ok: true };
+  }
+
+  @Post('reset-data')
+  async resetData(@Req() req: any, @Body() dto: ResetDataDto) {
+    if (dto.confirm !== 'RESET') {
+      throw new BadRequestException('Confirmation required');
+    }
+    const keepUserId = req.user.id as string;
+
+    await this.prisma.organization.deleteMany({});
+    await this.prisma.user.deleteMany({
+      where: { id: { not: keepUserId } },
+    });
+    await this.prisma.auditLog.deleteMany({
+      where: { NOT: { action: 'ADMIN_QBO_CONFIG_SNAPSHOT' } },
+    });
+    await this.prisma.user.update({
+      where: { id: keepUserId },
+      data: { organizationId: null, role: Role.SUPER_ADMIN, isActive: true },
+    });
+
+    const [users, companies] = await Promise.all([
+      this.prisma.user.count(),
+      this.prisma.organization.count(),
+    ]);
+    return { ok: true, users, companies };
   }
 }

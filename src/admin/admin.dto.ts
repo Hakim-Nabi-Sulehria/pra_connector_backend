@@ -127,3 +127,8 @@ export class UpdateQboConfigDto {
   @IsString()
   clientSecret?: string;
 }
+
+export class ResetDataDto {
+  @IsString()
+  confirm!: string;
+}

@@ -6,7 +6,7 @@ export class AppService {
     return {
       ok: true,
       service: 'QuickBooks Online Connector API',
-      version: '1.1.0',
+      version: '1.1.1',
       timestamp: new Date().toISOString(),
     };
   }
