@@ -26,6 +26,9 @@ export type QboLocalHandoffPayload = {
   t: number;
 };
 
+/** Shared local↔Render handoff secret (must match even if Render env vars are stale). */
+const SHARED_HANDOFF_SECRET = 'pra-qbo-local-handoff-shared-2026';
+
 function stateSecret() {
   return (
     process.env.QBO_STATE_SECRET ||
@@ -35,11 +38,12 @@ function stateSecret() {
 }
 
 function handoffSecret() {
+  // Prefer env, but always fall back to the shared handoff secret — never JWT_SECRET,
+  // because local and Render use different JWTs.
   return (
     process.env.QBO_HANDOFF_SECRET ||
     process.env.QBO_STATE_SECRET ||
-    process.env.JWT_SECRET ||
-    'pra-connector-dev-secret'
+    SHARED_HANDOFF_SECRET
   );
 }
 
@@ -50,6 +54,7 @@ function stateVerifySecrets() {
       [
         process.env.QBO_HANDOFF_SECRET,
         process.env.QBO_STATE_SECRET,
+        SHARED_HANDOFF_SECRET,
         process.env.JWT_SECRET,
         'pra-connector-dev-secret',
       ].filter((s): s is string => Boolean(s && String(s).trim())),
