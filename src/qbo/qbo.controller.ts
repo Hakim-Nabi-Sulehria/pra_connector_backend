@@ -1,8 +1,14 @@
-import { Controller, Get, Req, Res } from '@nestjs/common';
+import { Controller, Get, Query, Req, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { Public } from '../common/guards';
 import { resolveFrontendOrigin } from '../common/allowed-origins';
-import { peekMode, peekReturnOrigin, peekReturnPath, safeQboReturnPath } from './oauth-state';
+import {
+  buildLocalHandoffRedirectUrl,
+  peekMode,
+  peekReturnOrigin,
+  peekReturnPath,
+  safeQboReturnPath,
+} from './oauth-state';
 import { QboService } from './qbo.service';
 
 @Controller('qbo')
@@ -38,6 +44,15 @@ export class QboController {
         .trim();
       const fullUrl = `${proto}://${host}${req.originalUrl}`;
       const result = await this.qbo.handleCallback(fullUrl, req.query);
+
+      if (result.handoff) {
+        const handoffUrl = buildLocalHandoffRedirectUrl(
+          result.handoffOrigin,
+          result.payload,
+        );
+        return res.redirect(handoffUrl);
+      }
+
       frontend = resolveFrontendOrigin(result.returnOrigin || returnOrigin);
       const path = safeQboReturnPath(result.returnPath || returnPath, result.mode || mode);
       return res.redirect(this.resumeUrl(frontend, 'connected', path));
@@ -56,7 +71,35 @@ export class QboController {
         friendly =
           'invalid_client: Intuit rejected the app credentials. Development Client ID needs QBO_ENVIRONMENT=sandbox and the Development Redirect URI. Production Client ID needs QBO_ENVIRONMENT=production and the Production Redirect URI you already set.';
       }
+      if (/no sandbox companies/i.test(raw)) {
+        friendly =
+          'This Intuit user has no QuickBooks Sandbox company. For live companies use Production keys + Production Redirect URI (permanent Render callback).';
+      }
       return res.redirect(this.resumeUrl(frontend, 'error', returnPath, friendly));
+    }
+  }
+
+  /**
+   * Local-only receiver for production OAuth handoff.
+   * Render exchanges the code, then redirects the browser here with a signed payload.
+   */
+  @Public()
+  @Get('local-handoff')
+  async localHandoff(
+    @Query('handoff') handoff: string,
+    @Res() res: Response,
+  ) {
+    let frontend = resolveFrontendOrigin('http://localhost:5173');
+    let returnPath = '/app/connections';
+    try {
+      const result = await this.qbo.applyLocalHandoff(handoff);
+      frontend = resolveFrontendOrigin(result.returnOrigin || frontend);
+      returnPath = safeQboReturnPath(result.returnPath, result.mode);
+      return res.redirect(this.resumeUrl(frontend, 'connected', returnPath));
+    } catch (err: any) {
+      const message = String(err?.message || 'QBO local handoff failed');
+      console.error('[qbo/local-handoff]', message);
+      return res.redirect(this.resumeUrl(frontend, 'error', returnPath, message));
     }
   }
 }

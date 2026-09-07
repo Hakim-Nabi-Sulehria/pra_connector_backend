@@ -9,8 +9,11 @@ import axios from 'axios';
 import { ConnectionStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  decodeQboLocalHandoff,
   decodeQboOAuthState,
   encodeQboOAuthState,
+  isAllowedHandoffOrigin,
+  type QboLocalHandoffPayload,
 } from './oauth-state';
 
 @Injectable()
@@ -72,12 +75,17 @@ export class QboService {
       throw new BadRequestException('Organization and user are required for QBO connect');
     }
     const oauth = this.createClient();
+    const handoffOriginRaw = this.env('QBO_LOCAL_HANDOFF_ORIGIN');
+    const handoffOrigin = isAllowedHandoffOrigin(handoffOriginRaw)
+      ? handoffOriginRaw.replace(/\/$/, '')
+      : null;
     const state = encodeQboOAuthState({
       organizationId,
       userId,
       returnOrigin: returnOrigin || null,
       returnPath: returnPath || null,
       mode: mode || null,
+      handoffOrigin,
       t: Date.now(),
     });
     return oauth.authorizeUri({
@@ -132,9 +140,48 @@ export class QboService {
     const realmId = this.firstQuery(query.realmId) || token.realmId;
     if (!realmId) throw new BadRequestException('Missing QuickBooks realmId');
 
+    let companyName: string | null = null;
+    try {
+      const infoUrl = `${this.baseUrl()}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=75`;
+      const info = await axios.get(infoUrl, {
+        headers: {
+          Authorization: `Bearer ${token.access_token}`,
+          Accept: 'application/json',
+        },
+      });
+      companyName = info.data?.CompanyInfo?.CompanyName || null;
+    } catch {
+      companyName = null;
+    }
+
     const state = decodeQboOAuthState(stateRaw);
     if (!state.organizationId || !state.userId) {
       throw new BadRequestException('OAuth state is missing tenant identity');
+    }
+
+    // Local → production redirect handoff: exchange happens on the public
+    // callback host (Render), then tokens are relayed to localhost.
+    if (isAllowedHandoffOrigin(state.handoffOrigin)) {
+      return {
+        handoff: true as const,
+        handoffOrigin: String(state.handoffOrigin).replace(/\/$/, ''),
+        payload: {
+          organizationId: state.organizationId,
+          userId: state.userId,
+          realmId,
+          companyName,
+          accessToken: token.access_token as string,
+          refreshToken: token.refresh_token as string,
+          expiresIn: token.expires_in ? Number(token.expires_in) : null,
+          returnOrigin: state.returnOrigin,
+          returnPath: state.returnPath,
+          mode: state.mode,
+          t: Date.now(),
+        } satisfies QboLocalHandoffPayload,
+        returnOrigin: state.returnOrigin,
+        returnPath: state.returnPath,
+        mode: state.mode,
+      };
     }
 
     // Bind tokens only to the org that started connect — never trust client-supplied org alone.
@@ -166,21 +213,6 @@ export class QboService {
     const expiresAt = token.expires_in
       ? new Date(Date.now() + Number(token.expires_in) * 1000)
       : null;
-
-    // Fetch company name
-    let companyName: string | null = null;
-    try {
-      const infoUrl = `${this.baseUrl()}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=75`;
-      const info = await axios.get(infoUrl, {
-        headers: {
-          Authorization: `Bearer ${token.access_token}`,
-          Accept: 'application/json',
-        },
-      });
-      companyName = info.data?.CompanyInfo?.CompanyName || null;
-    } catch {
-      companyName = null;
-    }
 
     const qbo = await this.prisma.qboConnection.upsert({
       where: { organizationId: state.organizationId },
@@ -216,10 +248,83 @@ export class QboService {
     });
 
     return {
+      handoff: false as const,
       qbo,
       returnOrigin: state.returnOrigin,
       returnPath: state.returnPath,
       mode: state.mode,
+    };
+  }
+
+  async applyLocalHandoff(raw: string) {
+    const payload = decodeQboLocalHandoff(raw);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { id: true, isActive: true, organizationId: true },
+    });
+    if (!user || !user.isActive) {
+      throw new ForbiddenException('Connecting user is invalid or inactive');
+    }
+    if (user.organizationId !== payload.organizationId) {
+      throw new ForbiddenException(
+        'OAuth handoff does not match the connecting user organization',
+      );
+    }
+    const org = await this.prisma.organization.findUnique({
+      where: { id: payload.organizationId },
+      select: { id: true, isActive: true },
+    });
+    if (!org || !org.isActive) {
+      throw new ForbiddenException('Organization is invalid or inactive');
+    }
+
+    const expiresAt = payload.expiresIn
+      ? new Date(Date.now() + Number(payload.expiresIn) * 1000)
+      : null;
+
+    const qbo = await this.prisma.qboConnection.upsert({
+      where: { organizationId: payload.organizationId },
+      create: {
+        organizationId: payload.organizationId,
+        realmId: payload.realmId,
+        companyName: payload.companyName || null,
+        accessToken: payload.accessToken,
+        refreshToken: payload.refreshToken,
+        tokenExpiresAt: expiresAt || undefined,
+        status: ConnectionStatus.CONNECTED,
+        lastSyncedAt: new Date(),
+      },
+      update: {
+        realmId: payload.realmId,
+        companyName: payload.companyName || null,
+        accessToken: payload.accessToken,
+        refreshToken: payload.refreshToken,
+        tokenExpiresAt: expiresAt || undefined,
+        status: ConnectionStatus.CONNECTED,
+        lastSyncedAt: new Date(),
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId: payload.organizationId,
+        userId: payload.userId,
+        action: 'QBO_CONNECTED',
+        entity: 'QboConnection',
+        meta: {
+          realmId: payload.realmId,
+          companyName: payload.companyName,
+          via: 'local-handoff',
+        },
+      },
+    });
+
+    return {
+      qbo,
+      returnOrigin: payload.returnOrigin,
+      returnPath: payload.returnPath,
+      mode: payload.mode,
     };
   }
 

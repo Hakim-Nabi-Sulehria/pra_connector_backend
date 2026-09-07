@@ -50,6 +50,14 @@ export class CreateCompanyDto {
   @IsOptional()
   @IsString()
   fbrApiUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @IsOptional()
+  @IsString()
+  endDate?: string;
 }
 
 export class UpdateCompanyDto {
@@ -106,6 +114,14 @@ export class UpdateCompanyDto {
   @IsOptional()
   @IsString()
   fbrApiUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  startDate?: string;
+
+  @IsOptional()
+  @IsString()
+  endDate?: string;
 }
 
 export class UpdateQboConfigDto {
@@ -129,6 +145,11 @@ export class UpdateQboConfigDto {
 }
 
 export class ResetDataDto {
+  @IsString()
+  confirm!: string;
+}
+
+export class ClearCompanyDataDto {
   @IsString()
   confirm!: string;
 }

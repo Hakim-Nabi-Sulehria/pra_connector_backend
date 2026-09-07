@@ -7,6 +7,22 @@ export type QboOAuthState = {
   returnOrigin?: string | null;
   returnPath?: string | null;
   mode?: 'PRA' | 'FBR' | null;
+  /** When set (local dev), production callback relays tokens to this origin. */
+  handoffOrigin?: string | null;
+  t: number;
+};
+
+export type QboLocalHandoffPayload = {
+  organizationId: string;
+  userId: string;
+  realmId: string;
+  companyName?: string | null;
+  accessToken: string;
+  refreshToken: string;
+  expiresIn?: number | null;
+  returnOrigin?: string | null;
+  returnPath?: string | null;
+  mode?: 'PRA' | 'FBR' | null;
   t: number;
 };
 
@@ -18,10 +34,24 @@ function stateSecret() {
   );
 }
 
-function signPayload(payloadB64: string) {
-  return createHmac('sha256', stateSecret())
-    .update(payloadB64)
-    .digest('base64url');
+function handoffSecret() {
+  return (
+    process.env.QBO_HANDOFF_SECRET ||
+    process.env.QBO_STATE_SECRET ||
+    process.env.JWT_SECRET ||
+    'pra-connector-dev-secret'
+  );
+}
+
+function signPayload(payloadB64: string, secret: string) {
+  return createHmac('sha256', secret).update(payloadB64).digest('base64url');
+}
+
+function verifySignature(payloadB64: string, signature: string, secret: string) {
+  const expected = signPayload(payloadB64, secret);
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /** Encode org/user into a tamper-proof OAuth state string. */
@@ -29,7 +59,7 @@ export function encodeQboOAuthState(state: QboOAuthState): string {
   const payloadB64 = Buffer.from(JSON.stringify(state), 'utf8').toString(
     'base64url',
   );
-  return `${payloadB64}.${signPayload(payloadB64)}`;
+  return `${payloadB64}.${signPayload(payloadB64, stateSecret())}`;
 }
 
 /**
@@ -42,10 +72,7 @@ export function decodeQboOAuthState(raw: string): QboOAuthState {
   const signedMatch = raw.match(/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/);
   if (signedMatch) {
     const [, payloadB64, signature] = signedMatch;
-    const expected = signPayload(payloadB64);
-    const a = Buffer.from(signature);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    if (!verifySignature(payloadB64, signature, stateSecret())) {
       throw new BadRequestException('Invalid OAuth state signature');
     }
     try {
@@ -92,6 +119,15 @@ export function peekMode(raw?: string): 'PRA' | 'FBR' | null {
   }
 }
 
+export function peekHandoffOrigin(raw?: string): string | null {
+  if (!raw) return null;
+  try {
+    return decodeQboOAuthState(raw).handoffOrigin || null;
+  } catch {
+    return null;
+  }
+}
+
 function decodeMaybe(value: string) {
   try {
     return value.includes('%') ? decodeURIComponent(value) : value;
@@ -105,4 +141,62 @@ export function safeQboReturnPath(path?: string | null, mode?: string | null) {
   if (raw.startsWith('/fbr/app')) return raw;
   if (raw.startsWith('/app')) return raw;
   return mode === 'FBR' ? '/fbr/app/connections' : '/app/connections';
+}
+
+/** Only localhost handoff targets are allowed (never arbitrary remote hosts). */
+export function isAllowedHandoffOrigin(origin?: string | null): boolean {
+  if (!origin) return false;
+  try {
+    const u = new URL(origin);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    return u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+export function encodeQboLocalHandoff(payload: QboLocalHandoffPayload): string {
+  const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf8').toString(
+    'base64url',
+  );
+  return `${payloadB64}.${signPayload(payloadB64, handoffSecret())}`;
+}
+
+export function decodeQboLocalHandoff(raw: string): QboLocalHandoffPayload {
+  if (!raw) throw new BadRequestException('Missing handoff payload');
+  const signedMatch = raw.match(/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/);
+  if (!signedMatch) throw new BadRequestException('Invalid handoff payload');
+  const [, payloadB64, signature] = signedMatch;
+  if (!verifySignature(payloadB64, signature, handoffSecret())) {
+    throw new BadRequestException('Invalid handoff signature');
+  }
+  let parsed: QboLocalHandoffPayload;
+  try {
+    parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+  } catch {
+    throw new BadRequestException('Invalid handoff payload');
+  }
+  if (!parsed?.organizationId || !parsed?.userId || !parsed?.realmId) {
+    throw new BadRequestException('Handoff payload incomplete');
+  }
+  if (!parsed.accessToken || !parsed.refreshToken) {
+    throw new BadRequestException('Handoff tokens missing');
+  }
+  // 5 minute TTL
+  if (!parsed.t || Date.now() - Number(parsed.t) > 5 * 60 * 1000) {
+    throw new BadRequestException('Handoff expired — connect QuickBooks again');
+  }
+  return parsed;
+}
+
+export function buildLocalHandoffRedirectUrl(
+  handoffOrigin: string,
+  payload: QboLocalHandoffPayload,
+) {
+  if (!isAllowedHandoffOrigin(handoffOrigin)) {
+    throw new BadRequestException('Handoff origin not allowed');
+  }
+  const base = handoffOrigin.replace(/\/$/, '');
+  const token = encodeQboLocalHandoff(payload);
+  return `${base}/api/qbo/local-handoff?handoff=${encodeURIComponent(token)}`;
 }

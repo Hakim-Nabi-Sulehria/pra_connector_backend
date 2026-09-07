@@ -14,7 +14,7 @@ import * as bcrypt from 'bcrypt';
 import { ConnectionStatus, IntegrationMode, Prisma, Role } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard, Roles, RolesGuard } from '../common/guards';
-import { CreateCompanyDto, ResetDataDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
+import { CreateCompanyDto, ClearCompanyDataDto, ResetDataDto, UpdateCompanyDto, UpdateQboConfigDto } from './admin.dto';
 import {
   FBR_DEFAULT_BASE_URL,
   parseIntegrationMode,
@@ -29,6 +29,16 @@ function defaultPraUrl(environment: string) {
 
 function defaultFbrUrl(_environment: string) {
   return FBR_DEFAULT_BASE_URL;
+}
+
+function parseOptionalDate(value?: string | null): Date | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value.trim() === '') return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    throw new BadRequestException('Invalid date value');
+  }
+  return d;
 }
 
 function sanitizePra<T extends { apiToken?: string | null } | null | undefined>(pra: T) {
@@ -159,7 +169,7 @@ export class AdminController {
           lastLoginAt: true,
         },
       },
-      _count: { select: { users: true, invoices: true, branches: true } },
+      _count: { select: { users: true, invoices: true, fbrInvoices: true, branches: true } },
     };
   }
 
@@ -298,6 +308,8 @@ export class AdminController {
         name: companyName,
         legalName: companyName,
         integrationMode: mode,
+        startDate: parseOptionalDate(dto.startDate) ?? new Date(),
+        endDate: parseOptionalDate(dto.endDate) ?? null,
         qbo: { create: { status: ConnectionStatus.DISCONNECTED } },
         branches: {
           create: [{ name: 'Head Office', isDefault: true }],
@@ -400,13 +412,21 @@ export class AdminController {
     }
 
     await this.prisma.$transaction(async (tx) => {
+      const orgData: Prisma.OrganizationUpdateInput = {};
       if (dto.companyName?.trim()) {
+        orgData.name = dto.companyName.trim();
+        orgData.legalName = dto.companyName.trim();
+      }
+      if (dto.startDate !== undefined) {
+        orgData.startDate = parseOptionalDate(dto.startDate);
+      }
+      if (dto.endDate !== undefined) {
+        orgData.endDate = parseOptionalDate(dto.endDate);
+      }
+      if (Object.keys(orgData).length) {
         await tx.organization.update({
           where: { id },
-          data: {
-            name: dto.companyName.trim(),
-            legalName: dto.companyName.trim(),
-          },
+          data: orgData,
         });
       }
 
@@ -514,6 +534,102 @@ export class AdminController {
     return sanitizeCompany(full);
   }
 
+  @Patch('companies/:id/toggle')
+  async toggleCompany(@Param('id') id: string, @Req() req: any) {
+    const mode = this.adminMode(req);
+    const org = await this.prisma.organization.findFirst({
+      where: { id, integrationMode: mode },
+    });
+    if (!org) throw new BadRequestException('Company not found');
+
+    const nextActive = !org.isActive;
+    const updated = await this.prisma.organization.update({
+      where: { id },
+      data: {
+        isActive: nextActive,
+        endDate: nextActive ? null : org.endDate || new Date(),
+        startDate: org.startDate || org.createdAt,
+      },
+      include: this.companyInclude(),
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        organizationId: id,
+        userId: req.user?.id,
+        integrationMode: mode,
+        action: 'ADMIN_COMPANY_TOGGLE',
+        entity: 'Organization',
+        meta: { isActive: updated.isActive, endDate: updated.endDate },
+      },
+    });
+
+    return sanitizeCompany(updated);
+  }
+
+  @Post('companies/:id/clear-data')
+  async clearCompanyData(
+    @Param('id') id: string,
+    @Body() dto: ClearCompanyDataDto,
+    @Req() req: any,
+  ) {
+    if (dto.confirm !== 'CLEAR') {
+      throw new BadRequestException('Type CLEAR to confirm clearing scenario data');
+    }
+
+    const mode = this.adminMode(req);
+    const org = await this.prisma.organization.findFirst({
+      where: { id, integrationMode: mode },
+    });
+    if (!org) throw new BadRequestException('Company not found');
+
+    const [praInvoices, fbrInvoices, mappings] = await this.prisma.$transaction(async (tx) => {
+      const deletedPra = await tx.invoiceSync.deleteMany({ where: { organizationId: id } });
+      const deletedFbr = await tx.fbrInvoiceSync.deleteMany({ where: { organizationId: id } });
+      const deletedMappings = await tx.fieldMapping.deleteMany({ where: { organizationId: id } });
+
+      if (mode === IntegrationMode.FBR) {
+        await tx.fbrConnection.updateMany({
+          where: { organizationId: id },
+          data: { lastPostedAt: null },
+        });
+      } else {
+        await tx.praConnection.updateMany({
+          where: { organizationId: id },
+          data: { lastPostedAt: null },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          organizationId: id,
+          userId: req.user?.id,
+          integrationMode: mode,
+          action: 'ADMIN_COMPANY_CLEAR_DATA',
+          entity: 'Organization',
+          meta: {
+            praInvoices: deletedPra.count,
+            fbrInvoices: deletedFbr.count,
+            mappings: deletedMappings.count,
+          },
+        },
+      });
+
+      return [deletedPra.count, deletedFbr.count, deletedMappings.count] as const;
+    });
+
+    const full = await this.prisma.organization.findUnique({
+      where: { id },
+      include: this.companyInclude(),
+    });
+
+    return {
+      ok: true,
+      cleared: { praInvoices, fbrInvoices, mappings },
+      company: sanitizeCompany(full),
+    };
+  }
+
   /** @deprecated use GET /admin/companies */
   @Get('organizations')
   async organizations(@Query('q') q?: string) {
@@ -536,25 +652,10 @@ export class AdminController {
     return this.updateCompany(id, dto, req);
   }
 
+  /** @deprecated use PATCH /admin/companies/:id/toggle */
   @Patch('organizations/:id/toggle')
   async toggleOrg(@Param('id') id: string, @Req() req: any) {
-    const org = await this.prisma.organization.findUniqueOrThrow({
-      where: { id },
-    });
-    const updated = await this.prisma.organization.update({
-      where: { id },
-      data: { isActive: !org.isActive },
-    });
-    await this.prisma.auditLog.create({
-      data: {
-        organizationId: id,
-        userId: req.user?.id,
-        action: 'ADMIN_COMPANY_TOGGLE',
-        entity: 'Organization',
-        meta: { isActive: updated.isActive },
-      },
-    });
-    return updated;
+    return this.toggleCompany(id, req);
   }
 
   @Get('users')

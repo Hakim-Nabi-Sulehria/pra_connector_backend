@@ -13,6 +13,9 @@ services:
         value: https://pra-connector-frontend.vercel.app
       - key: QBO_REDIRECT_URI
         value: https://pra-connector-backend.onrender.com/api/qbo/callback
-      # Development keys from Intuit → sandbox. Production keys → production.
+      # Production Intuit keys must be set in Render dashboard (QBO_CLIENT_ID / QBO_CLIENT_SECRET).
       - key: QBO_ENVIRONMENT
-        value: sandbox
+        value: production
+      # Shared with local .env — signs Render → localhost OAuth handoff payloads.
+      - key: QBO_HANDOFF_SECRET
+        value: pra-qbo-local-handoff-shared-2026

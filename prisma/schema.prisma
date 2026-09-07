@@ -67,6 +67,8 @@ model Organization {
   industry        String?
   integrationMode IntegrationMode @default(PRA)
   isActive        Boolean         @default(true)
+  startDate       DateTime?
+  endDate         DateTime?
   plan            String          @default("starter")
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
