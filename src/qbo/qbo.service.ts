@@ -75,14 +75,17 @@ export class QboService {
       throw new BadRequestException('Organization and user are required for QBO connect');
     }
     const oauth = this.createClient();
-    const handoffOriginRaw = this.env('QBO_LOCAL_HANDOFF_ORIGIN');
-    const handoffOrigin = isAllowedHandoffOrigin(handoffOriginRaw)
-      ? handoffOriginRaw.replace(/\/$/, '')
-      : null;
+    const handoffOriginRaw = this.env('QBO_LOCAL_HANDOFF_ORIGIN') || 'http://localhost:4000';
+    if (!isAllowedHandoffOrigin(handoffOriginRaw)) {
+      throw new BadRequestException(
+        'QBO_LOCAL_HANDOFF_ORIGIN must be http://localhost:4000 (local handoff required)',
+      );
+    }
+    const handoffOrigin = handoffOriginRaw.replace(/\/$/, '');
     const state = encodeQboOAuthState({
       organizationId,
       userId,
-      returnOrigin: returnOrigin || null,
+      returnOrigin: returnOrigin || 'http://localhost:5173',
       returnPath: returnPath || null,
       mode: mode || null,
       handoffOrigin,
@@ -159,98 +162,30 @@ export class QboService {
       throw new BadRequestException('OAuth state is missing tenant identity');
     }
 
-    // Local → production redirect handoff: exchange happens on the public
-    // callback host (Render), then tokens are relayed to localhost.
-    if (isAllowedHandoffOrigin(state.handoffOrigin)) {
-      return {
-        handoff: true as const,
-        handoffOrigin: String(state.handoffOrigin).replace(/\/$/, ''),
-        payload: {
-          organizationId: state.organizationId,
-          userId: state.userId,
-          realmId,
-          companyName,
-          accessToken: token.access_token as string,
-          refreshToken: token.refresh_token as string,
-          expiresIn: token.expires_in ? Number(token.expires_in) : null,
-          returnOrigin: state.returnOrigin,
-          returnPath: state.returnPath,
-          mode: state.mode,
-          t: Date.now(),
-        } satisfies QboLocalHandoffPayload,
-        returnOrigin: state.returnOrigin,
-        returnPath: state.returnPath,
-        mode: state.mode,
-      };
-    }
-
-    // Bind tokens only to the org that started connect — never trust client-supplied org alone.
-    const user = await this.prisma.user.findUnique({
-      where: { id: state.userId },
-      select: {
-        id: true,
-        isActive: true,
-        organizationId: true,
-        role: true,
-      },
-    });
-    if (!user || !user.isActive) {
-      throw new ForbiddenException('Connecting user is invalid or inactive');
-    }
-    if (user.organizationId !== state.organizationId) {
-      throw new ForbiddenException(
-        'OAuth state does not match the connecting user organization',
+    // Render callback is handoff-only: tokens are never saved on Render/Neon.
+    // Local app receives them via /api/qbo/local-handoff and writes to local Postgres.
+    if (!isAllowedHandoffOrigin(state.handoffOrigin)) {
+      throw new BadRequestException(
+        'Connect from the local app (http://localhost:5173). Render only handles the OAuth callback handoff to localhost.',
       );
     }
-    const org = await this.prisma.organization.findUnique({
-      where: { id: state.organizationId },
-      select: { id: true, isActive: true },
-    });
-    if (!org || !org.isActive) {
-      throw new ForbiddenException('Organization is invalid or inactive');
-    }
-
-    const expiresAt = token.expires_in
-      ? new Date(Date.now() + Number(token.expires_in) * 1000)
-      : null;
-
-    const qbo = await this.prisma.qboConnection.upsert({
-      where: { organizationId: state.organizationId },
-      create: {
-        organizationId: state.organizationId,
-        realmId,
-        companyName,
-        accessToken: token.access_token,
-        refreshToken: token.refresh_token,
-        tokenExpiresAt: expiresAt || undefined,
-        status: ConnectionStatus.CONNECTED,
-        lastSyncedAt: new Date(),
-      },
-      update: {
-        realmId,
-        companyName,
-        accessToken: token.access_token,
-        refreshToken: token.refresh_token,
-        tokenExpiresAt: expiresAt || undefined,
-        status: ConnectionStatus.CONNECTED,
-        lastSyncedAt: new Date(),
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
+    return {
+      handoff: true as const,
+      handoffOrigin: String(state.handoffOrigin).replace(/\/$/, ''),
+      payload: {
         organizationId: state.organizationId,
         userId: state.userId,
-        action: 'QBO_CONNECTED',
-        entity: 'QboConnection',
-        meta: { realmId, companyName },
-      },
-    });
-
-    return {
-      handoff: false as const,
-      qbo,
-      returnOrigin: state.returnOrigin,
+        realmId,
+        companyName,
+        accessToken: token.access_token as string,
+        refreshToken: token.refresh_token as string,
+        expiresIn: token.expires_in ? Number(token.expires_in) : null,
+        returnOrigin: state.returnOrigin || 'http://localhost:5173',
+        returnPath: state.returnPath,
+        mode: state.mode,
+        t: Date.now(),
+      } satisfies QboLocalHandoffPayload,
+      returnOrigin: state.returnOrigin || 'http://localhost:5173',
       returnPath: state.returnPath,
       mode: state.mode,
     };

@@ -29,12 +29,11 @@ export class QboController {
   @Public()
   @Get('callback')
   async callback(@Req() req: any, @Res() res: Response) {
-    // Always land on the public /oauth/qbo page so a Guard mismatch cannot
-    // dump an authenticated FBR/PRA user onto /login after Intuit Approve.
     const returnOrigin = peekReturnOrigin(req.query?.state);
     const mode = peekMode(req.query?.state);
     const returnPath = safeQboReturnPath(peekReturnPath(req.query?.state), mode);
-    let frontend = resolveFrontendOrigin(returnOrigin);
+    // Always resume on localhost — never Vercel.
+    const frontend = resolveFrontendOrigin(returnOrigin || 'http://localhost:5173');
     try {
       const host = String(req.get('x-forwarded-host') || req.get('host') || '')
         .split(',')[0]
@@ -45,17 +44,12 @@ export class QboController {
       const fullUrl = `${proto}://${host}${req.originalUrl}`;
       const result = await this.qbo.handleCallback(fullUrl, req.query);
 
-      if (result.handoff) {
-        const handoffUrl = buildLocalHandoffRedirectUrl(
-          result.handoffOrigin,
-          result.payload,
-        );
-        return res.redirect(handoffUrl);
+      if (!result.handoff) {
+        throw new Error('Expected local handoff from Render callback');
       }
-
-      frontend = resolveFrontendOrigin(result.returnOrigin || returnOrigin);
-      const path = safeQboReturnPath(result.returnPath || returnPath, result.mode || mode);
-      return res.redirect(this.resumeUrl(frontend, 'connected', path));
+      return res.redirect(
+        buildLocalHandoffRedirectUrl(result.handoffOrigin, result.payload),
+      );
     } catch (err: any) {
       const json = err?.authResponse?.json || err?.authResponse?.body || {};
       const raw = String(
@@ -69,33 +63,32 @@ export class QboController {
       let friendly = raw;
       if (/invalid_client/i.test(raw)) {
         friendly =
-          'invalid_client: Intuit rejected the app credentials. Development Client ID needs QBO_ENVIRONMENT=sandbox and the Development Redirect URI. Production Client ID needs QBO_ENVIRONMENT=production and the Production Redirect URI you already set.';
+          'invalid_client: Intuit rejected the app credentials. Use Production Client ID/Secret with QBO_ENVIRONMENT=production.';
       }
       if (/no sandbox companies/i.test(raw)) {
         friendly =
-          'This Intuit user has no QuickBooks Sandbox company. For live companies use Production keys + Production Redirect URI (permanent Render callback).';
+          'This Intuit login has no live QuickBooks company for Production. Sign in with the company owner account.';
       }
       return res.redirect(this.resumeUrl(frontend, 'error', returnPath, friendly));
     }
   }
 
-  /**
-   * Local-only receiver for production OAuth handoff.
-   * Render exchanges the code, then redirects the browser here with a signed payload.
-   */
+  /** Local receiver: Render hands off tokens here; saves to local Postgres. */
   @Public()
   @Get('local-handoff')
   async localHandoff(
     @Query('handoff') handoff: string,
     @Res() res: Response,
   ) {
-    let frontend = resolveFrontendOrigin('http://localhost:5173');
+    const frontend = resolveFrontendOrigin('http://localhost:5173');
     let returnPath = '/app/connections';
     try {
       const result = await this.qbo.applyLocalHandoff(handoff);
-      frontend = resolveFrontendOrigin(result.returnOrigin || frontend);
       returnPath = safeQboReturnPath(result.returnPath, result.mode);
-      return res.redirect(this.resumeUrl(frontend, 'connected', returnPath));
+      const resumeFrontend = resolveFrontendOrigin(
+        result.returnOrigin || frontend,
+      );
+      return res.redirect(this.resumeUrl(resumeFrontend, 'connected', returnPath));
     } catch (err: any) {
       const message = String(err?.message || 'QBO local handoff failed');
       console.error('[qbo/local-handoff]', message);

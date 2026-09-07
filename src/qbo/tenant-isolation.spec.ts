@@ -18,7 +18,7 @@ describe('QBO OAuth state (multi-tenant binding)', () => {
     const encoded = encodeQboOAuthState({
       organizationId: 'org-company-a',
       userId: 'user-a',
-      returnOrigin: 'https://pra-connector-frontend.vercel.app',
+      returnOrigin: 'http://localhost:5173',
       t: 1,
     });
     const decoded = decodeQboOAuthState(encoded);
