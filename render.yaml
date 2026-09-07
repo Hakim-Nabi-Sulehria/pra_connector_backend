@@ -16,6 +16,8 @@ services:
       # Production Intuit keys must be set in Render dashboard (QBO_CLIENT_ID / QBO_CLIENT_SECRET).
       - key: QBO_ENVIRONMENT
         value: production
-      # Shared with local .env — signs Render → localhost OAuth handoff payloads.
+      # Shared with local .env — signs OAuth state + Render → localhost handoff.
       - key: QBO_HANDOFF_SECRET
+        value: pra-qbo-local-handoff-shared-2026
+      - key: QBO_STATE_SECRET
         value: pra-qbo-local-handoff-shared-2026

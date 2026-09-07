@@ -43,6 +43,20 @@ function handoffSecret() {
   );
 }
 
+/** Secrets accepted when verifying OAuth state (local JWT ≠ Render JWT). */
+function stateVerifySecrets() {
+  return [
+    ...new Set(
+      [
+        process.env.QBO_HANDOFF_SECRET,
+        process.env.QBO_STATE_SECRET,
+        process.env.JWT_SECRET,
+        'pra-connector-dev-secret',
+      ].filter((s): s is string => Boolean(s && String(s).trim())),
+    ),
+  ];
+}
+
 function signPayload(payloadB64: string, secret: string) {
   return createHmac('sha256', secret).update(payloadB64).digest('base64url');
 }
@@ -54,12 +68,17 @@ function verifySignature(payloadB64: string, signature: string, secret: string) 
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** Encode org/user into a tamper-proof OAuth state string. */
+/**
+ * Encode org/user into a tamper-proof OAuth state string.
+ * Local→Render handoff signs with QBO_HANDOFF_SECRET so Render can verify
+ * without sharing the production JWT_SECRET.
+ */
 export function encodeQboOAuthState(state: QboOAuthState): string {
   const payloadB64 = Buffer.from(JSON.stringify(state), 'utf8').toString(
     'base64url',
   );
-  return `${payloadB64}.${signPayload(payloadB64, stateSecret())}`;
+  const secret = state.handoffOrigin ? handoffSecret() : stateSecret();
+  return `${payloadB64}.${signPayload(payloadB64, secret)}`;
 }
 
 /**
@@ -72,7 +91,10 @@ export function decodeQboOAuthState(raw: string): QboOAuthState {
   const signedMatch = raw.match(/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/);
   if (signedMatch) {
     const [, payloadB64, signature] = signedMatch;
-    if (!verifySignature(payloadB64, signature, stateSecret())) {
+    const ok = stateVerifySecrets().some((secret) =>
+      verifySignature(payloadB64, signature, secret),
+    );
+    if (!ok) {
       throw new BadRequestException('Invalid OAuth state signature');
     }
     try {
@@ -90,13 +112,25 @@ export function decodeQboOAuthState(raw: string): QboOAuthState {
   }
 }
 
+/** Parse state payload without verifying signature (error-redirect UX only). */
+function peekStateUnsafe(raw?: string): Partial<QboOAuthState> | null {
+  if (!raw) return null;
+  try {
+    const signedMatch = String(raw).match(/^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/);
+    const payloadB64 = signedMatch ? signedMatch[1] : String(raw);
+    return JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
 /** Extract returnOrigin without throwing (used for error redirects). */
 export function peekReturnOrigin(raw?: string): string | null {
   if (!raw) return null;
   try {
     return decodeQboOAuthState(raw).returnOrigin || null;
   } catch {
-    return null;
+    return peekStateUnsafe(raw)?.returnOrigin || null;
   }
 }
 
@@ -105,7 +139,7 @@ export function peekReturnPath(raw?: string): string | null {
   try {
     return decodeQboOAuthState(raw).returnPath || null;
   } catch {
-    return null;
+    return peekStateUnsafe(raw)?.returnPath || null;
   }
 }
 
@@ -115,7 +149,8 @@ export function peekMode(raw?: string): 'PRA' | 'FBR' | null {
     const mode = decodeQboOAuthState(raw).mode;
     return mode === 'FBR' || mode === 'PRA' ? mode : null;
   } catch {
-    return null;
+    const mode = peekStateUnsafe(raw)?.mode;
+    return mode === 'FBR' || mode === 'PRA' ? mode : null;
   }
 }
 
@@ -124,7 +159,7 @@ export function peekHandoffOrigin(raw?: string): string | null {
   try {
     return decodeQboOAuthState(raw).handoffOrigin || null;
   } catch {
-    return null;
+    return peekStateUnsafe(raw)?.handoffOrigin || null;
   }
 }
 
